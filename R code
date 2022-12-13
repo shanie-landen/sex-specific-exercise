@@ -1,0 +1,2671 @@
+#load M and pheno without controls
+
+setwd("~/git")
+M_merged_QUT_diagen_7=read.delim("M_merged_QUT_diagen_xhyb_with_CONs.txt")
+#if control one already uploaded
+M_merged_QUT_diagen=dplyr::select(M_merged_QUT_diagen_7,!contains("CON"))
+
+#if load M without con I think the order isnt correct to pheno, so much match it before running limma
+M_merged_QUT_diagen=read.delim("M_merged_QUT_diagen_xhyb.txt") 
+M_merged_QUT_diagen=setcolorder(M_merged_QUT_diagen,pheno_imp_VO2_final$longID) #put columns in order as another vector
+
+#pheno_imputed_final=read.delim("imputed_pheno_final.txt")
+#load with VO2
+setwd("~/git/Study 3")
+pheno_long_select_imputed=read.delim("pheno_imp_withVO2.txt")
+pheno_long_select_imputed$longID=paste0(pheno_long_select_imputed$ID,"_",pheno_long_select_imputed$Timepoint)
+
+library(dplyr)
+pheno_imputed_final$longID=paste0(pheno_imputed_final$ID,"_",pheno_imputed_final$Timepoint)
+
+#merge with batch info from imputed final
+#how to merge/join df without duplicating columns
+pheno_imp_VO2_final=left_join(pheno_long_select_imputed,pheno_imputed_final, by="longID", suffix=c("",".y"))%>%
+  dplyr::select(-ends_with(".y"))
+
+
+pheno_imp_VO2_final=pheno_imp_VO2_final[match(colnames(M_merged_QUT_diagen), pheno_imp_VO2_final$longID),]
+
+#make baseline z, and baseline VO2
+baselinez=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE",c("ID","zscore")]
+baselinez=baselinez %>% dplyr::slice(rep(1:n(), each = 2))
+pheno_imp_VO2_final$baselinez=baselinez$zscore
+
+baselineVO2=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE",c("ID","VO2max_rel")]
+baselineVO2=baselineVO2 %>% dplyr::slice(rep(1:n(), each = 2))
+pheno_imp_VO2_final$baselineVO2=baselineVO2$VO2max_rel
+#just manually change SG107  and SG185  who I imputed their PRE values, use their 4WP value
+pheno_imp_VO2_final$baselineVO2[pheno_imp_VO2_final$longID=="SG107_PRE"]<-pheno_imp_VO2_final$VO2max_rel[pheno_imp_VO2_final$longID=="SG107_4WP"]
+pheno_imp_VO2_final$baselineVO2[pheno_imp_VO2_final$longID=="SG107_4WP"]<-pheno_imp_VO2_final$VO2max_rel[pheno_imp_VO2_final$longID=="SG107_4WP"]
+pheno_imp_VO2_final$baselineVO2[pheno_imp_VO2_final$longID=="SG185_PRE"]<-pheno_imp_VO2_final$VO2max_rel[pheno_imp_VO2_final$longID=="SG185_4WP"]
+pheno_imp_VO2_final$baselineVO2[pheno_imp_VO2_final$longID=="SG185_4WP"]<-pheno_imp_VO2_final$VO2max_rel[pheno_imp_VO2_final$longID=="SG185_4WP"]
+
+
+#save that final one
+write.table(pheno_imp_VO2_final,
+            file="pheno_imp_VO2_final.txt",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+pheno_imp_VO2_final=read.delim("pheno_imp_VO2_final.txt")
+
+#make sure correct class
+pheno_imp_VO2_final$Timepoint=factor(pheno_imp_VO2_final$Timepoint,levels=c("PRE","4WP"))
+pheno_imp_VO2_final$sex=factor(pheno_imp_VO2_final$sex)
+pheno_imp_VO2_final$batch=factor(as.character(pheno_imp_VO2_final$batch))
+
+
+#linear model
+library(limma)
+design <- model.matrix(~sex*Timepoint+Age_PRE+batch+baselineVO2,
+                       pheno_imp_VO2_final)
+
+corfitM <- duplicateCorrelation(M_merged_QUT_diagen,
+                                design,
+                                block = pheno_imp_VO2_final$ID) 
+#corfit consensus for ~sex*Timepoint+Age_PRE+batch+TypeI+baselinez males and females no controls=0.2245878 for M
+#corfit consensus for ~sex*Timepoint+Age_PRE+batch+baselinez males and females with 7 controls for M= 0.2253365
+#corfit M for ~sex*Timepoint+Age_PRE+batch+baselinez without controls 0.2260476
+
+#can run corfit on subset of 20,000 cpgs to save time
+Bsubset <- Gene_SMART_B[sample(nrow(Gene_SMART_B),size=20000,replace=FALSE),]
+corfit_subset_B_1 <- duplicateCorrelation(Bsubset, #we fit limma models on M values and not beta values
+                                          design,
+                                          block=pheno_imp_VO2_final$ID)
+
+#scale baseline VO2 per sex to compare to not scaled to see if that makes a difference in results (colinearity issues?)
+males_scaled=pheno_imp_VO2_final %>% dplyr::filter(sex=="male")  %>% 
+  dplyr::select("longID","baselineVO2")  %>% 
+  mutate(baselineVO2_scaledpersex=scale(baselineVO2)) 
+
+females_scaled=pheno_imp_VO2_final %>% dplyr::filter(sex=="female")  %>% 
+  dplyr::select("longID","baselineVO2")  %>% 
+  mutate(baselineVO2_scaledpersex=scale(baselineVO2))
+
+all_scaled=rbind(males_scaled,females_scaled)
+pheno_imp_VO2_final=left_join(pheno_imp_VO2_final,all_scaled,by="longID", suffix=c("",".y"))%>%
+  dplyr::select(-ends_with(".y"))
+
+#full M table
+#corfit M for ~Timepoint+Age_PRE+batch+sex*baselineVO2= 0.236501 (NEW)
+#corfit B for ~Timepoint+Age_PRE+batch+sex*baselineVO2= 0.2373339 (NEW)
+
+#corfit M for ~sex*Timepoint+Age_PRE+batch+baselinez= 0.2353604 (NEW)
+#corfit B for ~sex*Timepoint+Age_PRE+batch+baselinez=   0.2346819(NEW)
+
+#corfit M for ~sex*Timepoint+Age_PRE+batch+baselineVO2= 0.2362916 (NEW)
+#corfit B for ~sex*Timepoint+Age_PRE+batch+baselineVO2=  0.2359237 (NEW)
+
+#reduced M (subsetted table) [check if scale VO2 per sex if it makes a difference in results, how willI decide this?]
+#corfit Msubset for ~Timepoint+Age_PRE+batch+sex*baselineVO2= 0.2343436 (NEW ALSO)
+#corfit Msubset for ~Timepoint+Age_PRE+batch+sex*baselineVO2_scaledpersex= 0.2343436 (NEW ALSO)
+
+#reduced B (subsetted table)
+#corfit Bsubset for ~Timepoint+Age_PRE+batch+sex*baselineVO2=  0.236985 (NEW ALSO)
+
+
+fit = limma::lmFit(Gene_SMART_B,
+            design,
+            block=pheno_imp_VO2_final$ID,
+            correlation= 0.2359237) 
+
+fit2 <- eBayes(fit)
+results_sextime_B=topTable(fit2,
+                            coef = "sexmale:Timepoint4WP",
+                            number = nrow(Gene_SMART_B),
+                            p.value = 1)
+
+
+
+#annotation
+setwd("~/git")  
+annotation=read.delim('Annotation_2020.txt',header=TRUE)
+rownames(annotation)=annotation$probeID
+
+DMPs$"probeID"=rownames(DMPs)
+DMPs=left_join(DMPs,annotation,by="probeID")
+
+#histogram p vals
+g=ggplot(baselinez_results2,aes(P.Value))+
+  geom_histogram(bins=20,col=I("black"))+
+  theme_minimal()+
+  xlab("Raw P values")+
+  ggtitle("Baseline z-score:4WP")
+
+tiff("histogram raw p vals interaction baselinez and TP.tiff",
+     height = 3,
+     width = 5,
+     units = "in",
+     res = 600)
+g
+dev.off()
+
+#maybe if I keep the 1 male control (and female controls and have more power)
+setwd("~/git")
+M_merged_QUT_diagen_CON=read.delim("M_merged_QUT_diagen_xhyb_with_CONs.txt")
+imputed_pheno_final_with_CON=read.delim("imputed_pheno_final_with_CON.txt")
+
+#add 185 CON timepoint to pheno
+SG185toadd <- data.frame("SG185", "CON", 26.84211,1.800,103.80,NA,22.97604,"male",NA,NA,NA,NA,NA,2)
+
+#Naming the Data Frame - Step 2  
+names(SG185toadd) <- colnames(imputed_pheno_final_with_CON)
+
+imputed_pheno_final_with_7CON=rbind(imputed_pheno_final_with_CON,SG185toadd)
+
+#add baseline z, but do it separately for CONs then combine it with the imputed pheno without cons
+which(imputed_pheno_final_with_7CON$Timepoint=="CON")
+#manually select the CONs and their respective PREs
+CONs_with_PRE=imputed_pheno_final_with_7CON[c(57,58,66,67,75,76,86,87,89,90,94,95,137,135),]
+#now set the baselinez
+baselinez=CONs_with_PRE[CONs_with_PRE$Timepoint=="PRE",c("ID","zscore")]
+baselinez=baselinez %>% dplyr::slice(rep(1:n(), each = 2))
+CONs_with_PRE$baselinez=baselinez$zscore
+#now just select the CONs so dont have repeats when bind
+CONs=CONs_with_PRE%>%filter(Timepoint=="CON")
+
+pheno_cons_all=rbind(pheno_imputed_final,CONs)
+rownames(pheno_cons_all)=print(paste0(pheno_cons_all$ID,"_",pheno_cons_all$Timepoint))
+pheno_cons_all=pheno_cons_all[match(colnames(M_merged_QUT_diagen_7),rownames(pheno_cons_all)),]
+
+#make PRE the reference
+pheno_cons_all$Timepoint=factor(pheno_cons_all$Timepoint,levels=c("PRE","CON","4WP"))
+
+#yay no go try linear model
+#just make sure same order one last time
+pheno_cons_all$uniqueID=print(paste0(pheno_cons_all$ID,"_",pheno_cons_all$Timepoint))
+pheno_cons_all=pheno_cons_all[match(colnames(M_merged_QUT_diagen_7),pheno_cons_all$uniqueID),]
+
+design <- model.matrix(~sex+Timepoint+Age_PRE+batch+baselinez,
+                       pheno_cons_all)
+
+corfit <- duplicateCorrelation(M_merged_QUT_diagen_7,
+                               design,
+                               block = pheno_cons_all$ID) 
+#corfit consensus for ~sex*Timepoint+Age_PRE+batch+TypeI+baselinez males and females with 7 controls=0.2247971 for M
+#corfit consensus for ~sex*Timepoint+Age_PRE+batch+baselinez males and females with 7 controls=0.2253365 for M
+#corfit consensus without interaction bcs CON timepoint looks as if signficant ~sex+Timepoint+Age_PRE+batch+baselinez with 7 controls for M=0.22706, for B= 0.2311239
+
+fit = lmFit(M_merged_QUT_diagen_7,
+            design,
+            block=pheno_cons_all$ID,
+            correlation=0.22706) 
+
+fit2 <- eBayes(fit)
+all_results=topTable(fit2,
+                     coef = "Timepoint4WP",
+                     number = nrow(M_merged_QUT_diagen_7),
+                     p.value = 1)
+#logFC for beta values
+library(minfi)
+Gene_SMART_B=ilogit2(M_merged_QUT_diagen)
+corfitB <- duplicateCorrelation(Gene_SMART_B,
+                                design,
+                                block = pheno_imp_VO2_final$ID) #watch out this takes 30 min (took 1:50!!!!gr)
+
+#corfit corr for B for including 7 controls= 0.2291764 for ~sex*Timepoint+Age_PRE+batch+TypeI+baselinez,
+#corfit corr for B without controls for sex*Timepoint+Age_PRE+batch+baselinez 0.2253012
+fitB = lmFit(Gene_SMART_B,
+             design,
+             block=pheno_imputed_final$ID,
+             correlation=0.2253012) 
+
+fitB2 <- eBayes(fitB)
+
+
+all_results_B=topTable(fitB2,
+                       coef = "sexmale:Timepoint4WP",
+                       number = nrow(Gene_SMART_B),
+                       p.value = 1)
+
+#but them in same order!!!
+results_notscaledB$CpG=rownames(results_notscaledB)
+results_notscaledB=results_notscaledB[match(rownames(results_notscaled),results_notscaledB$CpG),]
+results_notscaled$BetaEffectSize=results_notscaledB$logFC*100
+
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+CpGs=rownames(results_notscaled)
+results_notscaled = mutate(results_notscaled, sig=ifelse(results_notscaled$adj.P.Val<0.05, "FDR<0.05", "Not Sig"))
+results_notscaled = mutate(results_notscaled, coef=ifelse(results_notscaled$BetaEffectSize<0, "neg", "pos"))
+results_notscaled = mutate(results_notscaled, color=ifelse(results_notscaled$adj.P.Val>0.05,"black",ifelse(results_notscaled$adj.P.Val<0.05&results_notscaled$coef=="neg","blue","red")))#for some reason worked this way and not when i did adjp> so above two lines are kind of extra but helped to make sure it was correct
+results_notscaled=data.frame(CpGs,results_notscaled)
+#ifelse- "if its met" "it will do this", volcano
+results_notscaled$color<-as.factor(results_notscaled$color)
+p=ggplot(results_notscaled, aes(BetaEffectSize, -log10(P.Value))) +
+  geom_point(aes(col=color),size=0.3)+
+  scale_color_manual(values=c("black","#1F78B4", "#E31A1C"))+
+  labs(x="% DNAm diff. associated with CRF between in males compared to females",y="-log10(p-value)")+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  #xlim(-7, 7)
+  geom_text_repel(data=results_notscaled[c("cg15733367")],
+                  aes(label=CpGs),
+                  size=2.5,
+                  box.padding = unit(1.5, "lines"),
+                  point.padding = unit(0, "lines"))
+#how to subset two rows!
+
+
+tiff("Volcano plot baselineVO2:sex DNAm.tiff",
+     height=4.5,
+     width=5,
+     units="in",
+     res=600)
+p
+dev.off()
+
+#well I have stupidly saved the imputed table with zscores only and no PP LT VO2, so now I have to reload it to do the fitness improvements
+library(readxl)
+setwd("~/git/Study 3")
+pheno_females <- read_excel("Gene SMART SG100-SG195_22_09_2020.xlsx",sheet="Women",skip=1,n_max=26)
+pheno_females$sex="female"
+
+pheno_females$VO2max_rel_4WP=as.numeric(pheno_females$VO2max_rel_4WP)
+pheno_females$VO2max_rel_PRE=as.numeric(pheno_females$VO2max_rel_PRE)
+pheno_females$VO2max_rel_CON=as.numeric(pheno_females$VO2max_rel_CON)
+pheno_females$LT_exp_rel_4WP=as.numeric(pheno_females$LT_exp_rel_4WP)
+pheno_females$LT_exp_rel_PRE=as.numeric(pheno_females$LT_exp_rel_PRE)
+pheno_females$LT_exp_rel_CON=as.numeric(pheno_females$LT_exp_rel_CON)
+pheno_females$Wpeak_rel_PRE=as.numeric(pheno_females$Wpeak_rel_PRE)
+pheno_females$Wpeak_rel_4WP=as.numeric(pheno_females$Wpeak_rel_4WP)
+pheno_females$Wpeak_rel_CON=as.numeric(pheno_females$Wpeak_rel_CON)
+
+pheno_first<-read_excel("Gene SMART SG100-SG195_22_09_2020.xlsx",sheet="First intervention",skip=1,n_max=97)
+pheno_first$sex="male"
+
+pheno_first$VO2max_rel_4WP=as.numeric(pheno_first$VO2max_rel_4WP)
+pheno_first$VO2max_rel_PRE=as.numeric(pheno_first$VO2max_rel_PRE)
+pheno_first$LT_poly_rel_4WP=as.numeric(pheno_first$LT_poly_rel_4WP)
+pheno_first$LT_poly_rel_PRE=as.numeric(pheno_first$LT_poly_rel_PRE)
+pheno_first$Wpeak_rel_PRE=as.numeric(pheno_first$Wpeak_rel_PRE)
+pheno_first$Wpeak_rel_4WP=as.numeric(pheno_first$Wpeak_rel_4WP)
+
+#note that the lactates used in z scores are different... exp for females, just mention that it is more accurate so used it when scaling, but they are similar nonetheless
+phenos_first=pheno_first %>% select(ID, Age_PRE,sex,Height,Weight_PRE,VO2max_rel_4WP,VO2max_rel_PRE,LT_poly_rel_4WP,LT_poly_rel_PRE,Wpeak_rel_4WP,Wpeak_rel_PRE)
+phenos_females=pheno_females %>% select(ID, Age_PRE,sex,Height,Weight_PRE,VO2max_rel_4WP,VO2max_rel_PRE,LT_poly_rel_4WP,LT_poly_rel_PRE,Wpeak_rel_4WP,Wpeak_rel_PRE)
+
+phenos_combined=rbind(phenos_first,phenos_females)
+
+library(tidyr)
+pheno_long=pivot_longer(data=phenos_combined,cols=-c(ID,Age_PRE,sex,Height,Weight_PRE),
+                        names_to=c(".value","Timepoint"), #indicates that component of the name
+                        names_pattern="(.+)_(PRE|4WP)$",
+                        values_drop_na='FALSE')
+
+#select 
+pheno_long_select=pheno_long[pheno_long$ID %in% pheno_imputed_final$ID,]
+pheno_long_select$Timepoint=factor(pheno_long_select$Timepoint,levels=c("PRE","4WP"))
+pheno_long_select$sex=factor(pheno_long_select$sex,levels=c("male","female"))
+#graph
+library(ggpubr)
+library(RColorBrewer)
+#use pheno_long_select for VO2max, PP, or LT boxplots
+b=ggboxplot(data=pheno_imputed_final, x='Timepoint', y='zscore',
+            xlab="Timepoint", ylab='Fitness z score',
+            facet.by = "sex",
+            panel.labs =list(sex = c("Males", "Females")),
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  scale_fill_brewer(palette = "Set2") #cant multiply y by 100 try geom_boxplot
+
+
+
+#for PP,VO2, LT
+b=ggboxplot(data=pheno_long_select, x='Timepoint', y='Wpeak_rel',
+            xlab="Timepoint", ylab='Peak power (watts/kg)',
+            facet.by = "sex",
+            panel.labs =list(sex = c("Males", "Females")),
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  scale_fill_brewer(palette = "Set2") 
+
+tiff("PP box plots without imp.tiff",
+     height = 3,
+     width = 7,
+     units = "in",
+     res = 300)
+b
+dev.off()
+
+#distribution of values
+#to get VO2, LT, and PP (without imputed bcs I accidentally forgot to save them)
+males_PRE=pheno_long_select %>% filter(sex=="male" & Timepoint=="PRE")
+#to get the z score distributions including imputed values
+males_PRE=imputed_pheno_final_with_CON %>% filter(sex=="male" & Timepoint=="PRE")
+
+both_PRE=pheno_long_select %>% filter( Timepoint=="PRE")
+both_PRE$LT_poly_rel=as.numeric(both_PRE$LT_poly_rel)
+
+#for z scores including imputed
+both_PRE=imputed_pheno_final_with_CON %>% filter(Timepoint=="PRE")
+
+g=ggplot(both_PRE,aes(x=zscore,fill=sex))+
+  geom_density(alpha = 0.6)+
+  ggtitle("Distribution of baseline fitness z score")+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Set2")+
+  xlab("Fitness z score")
+
+#stats-add p values and do for rest, p value for each improvement and for difference, violin better?
+#use pheno_imputed_final to check z scores without controls in scaling
+
+library(PairedData)
+# Subset weight data before treatment, remember using the table with cons means they are scaled for con values, so p value is diff b 0.001
+PRE <- subset(pheno_imputed_final,  Timepoint == "PRE", zscore,
+              drop = TRUE)
+# subset weight data after treatment
+FourWP <- subset(pheno_imputed_final,  Timepoint == "4WP", zscore,
+                 drop = TRUE)
+# Plot paired data
+library(PairedData)
+pd <- paired(PRE, FourWP)
+plot(pd, type = "profile") + theme_bw()
+
+#test the normality of the data before using t test
+d <- with(pheno_long_select, 
+          VO2max_rel[Timepoint == "PRE"] - VO2max_rel[Timepoint == "4WP"])
+# Shapiro-Wilk normality test for the differences
+shapiro.test(d) # => p-value = 0.9336
+
+#zscores with imputed, combines m and f
+res <- t.test(PRE, FourWP, paired = TRUE) #or res <- t.test(zscore ~ Timepoint, data = pheno_long_select, paired = TRUE) but dont want to use CON
+
+#just females
+FEMS=pheno_imputed_final[pheno_imputed_final$sex=="female",]
+t.test(zscore ~ Timepoint, data = FEMS, paired = TRUE) 
+
+#just males
+MALS=pheno_imputed_final[pheno_imputed_final$sex=="male",]
+t.test(zscore ~ Timepoint, data = MALS, paired = TRUE) 
+
+#without con for interaction
+aov1 <- aov(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+boxplot(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+m1=lm(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+summary(m1)
+
+#means for table
+FEMS_PRE=FEMS[FEMS$Timepoint=="PRE",]
+FEMS_4WP=FEMS[FEMS$Timepoint=="4WP",]
+mean(FEMS_PRE$zscore)
+mean(FEMS_4WP$zscore)
+
+MALS_PRE=MALS[MALS$Timepoint=="PRE",]
+MALS_4WP=MALS[MALS$Timepoint=="4WP",]
+mean(MALS_PRE$zscore)
+mean(MALS_4WP$zscore)
+
+ALL_PRE=pheno_imputed_final[pheno_imputed_final$Timepoint=="PRE",]
+ALL_4WP=pheno_imputed_final[pheno_imputed_final$Timepoint=="4WP",]
+mean(ALL_PRE$zscore)
+mean(ALL_4WP$zscore)
+
+MALS_PRE=MALS[MALS$Timepoint=="PRE",]
+MALS_4WP=MALS[MALS$Timepoint=="4WP",]
+mean(MALS_PRE$zscore)
+mean(MALS_4WP$zscore)
+
+
+#now same for VO2 without imputed (use pheno_long_select, this is without imp)
+#wont work with NAs, drop them
+which(is.na(pheno_long_select$VO2max_rel)) #5 participants
+phenos_drop_NAs= pheno_long_select %>% drop_na("VO2max_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(VO2max_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+ALL_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+ALL_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(ALL_PRE$VO2max_rel)
+mean(ALL_4WP$VO2max_rel)
+#just females
+FEMS=pheno_long_select[pheno_long_select$sex=="female",]
+FEMS_drop_NAs= FEMS %>% drop_na("VO2max_rel") #drop NAs
+IDs_with_both_tp=FEMS_drop_NAs[duplicated(FEMS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=FEMS_drop_NAs[FEMS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(VO2max_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+#means for table
+FEMS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+FEMS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(FEMS_PRE$VO2max_rel)
+mean(FEMS_4WP$VO2max_rel)
+
+#just males
+MALS=pheno_long_select[pheno_long_select$sex=="male",]
+MALS_drop_NAs= MALS %>% drop_na("VO2max_rel") #drop NAs
+IDs_with_both_tp=MALS_drop_NAs[duplicated(MALS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=MALS_drop_NAs[MALS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(VO2max_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+MALS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+MALS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(MALS_PRE$VO2max_rel)
+mean(MALS_4WP$VO2max_rel)
+
+#now same for PP
+which(is.na(pheno_long_select$Wpeak_rel)) #3 participants
+phenos_drop_NAs= pheno_long_select %>% drop_na("Wpeak_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(Wpeak_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+ALL_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+ALL_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(ALL_PRE$Wpeak_rel)
+mean(ALL_4WP$Wpeak_rel)
+#just females
+FEMS=pheno_long_select[pheno_long_select$sex=="female",]
+FEMS_drop_NAs= FEMS %>% drop_na("Wpeak_rel") #drop NAs
+IDs_with_both_tp=FEMS_drop_NAs[duplicated(FEMS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=FEMS_drop_NAs[FEMS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(Wpeak_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+#means for table
+FEMS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+FEMS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(FEMS_PRE$Wpeak_rel)
+mean(FEMS_4WP$Wpeak_rel)
+
+#just males
+MALS=pheno_long_select[pheno_long_select$sex=="male",]
+MALS_drop_NAs= MALS %>% drop_na("Wpeak_rel") #drop NAs
+IDs_with_both_tp=MALS_drop_NAs[duplicated(MALS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=MALS_drop_NAs[MALS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(Wpeak_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+MALS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+MALS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(MALS_PRE$Wpeak_rel)
+mean(MALS_4WP$Wpeak_rel)
+
+#now same for LT
+pheno_long_select$LT_poly_rel=as.numeric(pheno_long_select$LT_poly_rel)
+which(is.na(pheno_long_select$LT_poly_rel)) #6 participants, THIS IS POLY FORMALES BUT EXP METHOD FOR FEMALES, either get exp for males, poly for females, or just leave and shouldnt matter
+phenos_drop_NAs= pheno_long_select %>% drop_na("LT_poly_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(LT_poly_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+ALL_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+ALL_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(ALL_PRE$LT_poly_rel)
+mean(ALL_4WP$LT_poly_rel)
+#just females
+FEMS=pheno_long_select[pheno_long_select$sex=="female",]
+FEMS_drop_NAs= FEMS %>% drop_na("LT_poly_rel") #drop NAs
+IDs_with_both_tp=FEMS_drop_NAs[duplicated(FEMS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=FEMS_drop_NAs[FEMS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(LT_poly_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+#means for table
+FEMS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+FEMS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(FEMS_PRE$LT_poly_rel)
+mean(FEMS_4WP$LT_poly_rel)
+
+#just males
+MALS=pheno_long_select[pheno_long_select$sex=="male",]
+MALS_drop_NAs= MALS %>% drop_na("LT_poly_rel") #drop NAs
+IDs_with_both_tp=MALS_drop_NAs[duplicated(MALS_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=MALS_drop_NAs[MALS_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(LT_poly_rel ~ Timepoint, data = phenos_drop_NAs_alltp, paired = TRUE) 
+
+MALS_PRE=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="PRE",]
+MALS_4WP=phenos_drop_NAs_alltp[phenos_drop_NAs_alltp$Timepoint=="4WP",]
+mean(MALS_PRE$LT_poly_rel)
+mean(MALS_4WP$LT_poly_rel)
+
+#check for p value of sex in each meausure
+pheno_long_select$LT_poly_rel=as.numeric(pheno_long_select$LT_poly_rel)
+which(is.na(pheno_long_select$LT_poly_rel)) #6 participants, THIS IS POLY FORMALES BUT EXP METHOD FOR FEMALES, either get exp for males, poly for females, or just leave and shouldnt matter
+phenos_drop_NAs= pheno_long_select %>% drop_na("LT_poly_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(LT_poly_rel ~ sex, data = phenos_drop_NAs_alltp, paired = FALSE) 
+
+#PP for sex comparison
+which(is.na(pheno_long_select$Wpeak_rel)) #3 participants
+phenos_drop_NAs= pheno_long_select %>% drop_na("Wpeak_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(Wpeak_rel ~ sex, data = phenos_drop_NAs_alltp, paired = FALSE) 
+
+#VO2 sex
+which(is.na(pheno_long_select$VO2max_rel)) #5 participants
+phenos_drop_NAs= pheno_long_select %>% drop_na("VO2max_rel") #drop NAs
+IDs_with_both_tp=phenos_drop_NAs[duplicated(phenos_drop_NAs$ID),] #and keep the pairs that have pre and post values
+phenos_drop_NAs_alltp=phenos_drop_NAs[phenos_drop_NAs$ID %in% IDs_with_both_tp$ID,]
+
+t.test(VO2max_rel ~ sex, data = phenos_drop_NAs_alltp, paired = FALSE) 
+
+#z score and sex
+aov1 <- aov(zscore ~ sex, data=pheno_imputed_final) #same as next
+m1=lm(zscore ~ sex, data=pheno_imputed_final)
+summary(m1)
+
+#without con for interaction
+aov1 <- aov(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+boxplot(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+m1=lm(zscore ~ Timepoint*sex, data=pheno_imputed_final)
+summary(m1)
+
+#interaction for VO2 and time
+boxplot(VO2max_rel ~ Timepoint*sex, data=pheno_long_select)
+m1=lm(VO2max_rel ~ Timepoint*sex, data=pheno_long_select)
+summary(m1)
+
+boxplot(LT_poly_rel ~ Timepoint*sex, data=pheno_long_select)
+m1=lm(LT_poly_rel ~ Timepoint*sex, data=pheno_long_select)
+summary(m1)
+
+boxplot(Wpeak_rel ~ Timepoint*sex, data=pheno_long_select)
+m1=lm(Wpeak_rel ~ Timepoint*sex, data=pheno_long_select)
+summary(m1)
+
+#check if VO2 increased in sex-specific manner in EMTAB
+aov1 <- aov(`VO2 max` ~ Timepoint, data=phenos_11282)
+boxplot(`VO2 max` ~ Timepoint*Gender, data=phenos_11282)
+m1=lm(`VO2 max` ~ Timepoint, data=phenos_11282)
+summary(m1)
+
+#dmrcate and GSEA for  time, baselinez, time:sex
+library(limma)
+library(DMRcate)
+library(IRanges)
+setwd("~/git")  
+annotation=read.delim('Annotation_2020.txt',header=TRUE)
+rownames(annotation)=annotation$probeID
+
+TheResults_time=all_results[all_results$adj.P.Val<0.005,]
+TheResults_baselinez=all_results[all_results$adj.P.Val<0.005,]
+TheResults_sextime=all_results_sextime[all_results_sextime$adj.P.Val<0.05,]
+
+
+CpGs2<-rownames(TheResults_time) #for DMRs only with sex not interaction with exercise
+TheResults_time$Markername=rownames(TheResults_time)
+annotation_overlap_only=annotation[is.element(annotation$probeID,intersect(annotation$probeID,rownames(TheResults_time))),]
+
+library(dplyr)
+TheResults_time$cpg=rownames(TheResults_time)
+TheResults_time=arrange(TheResults_time,cpg)
+
+annotation_overlap_only_2=arrange(annotation_overlap_only,probeID)
+
+
+#We need to create a "CpGannotated" object to be used in dmrcate
+annotated_only <- GRanges(as.character(annotation_overlap_only_2$CpG_chrm), #chromosome
+                          IRanges(start=c(annotation_overlap_only_2$CpG_beg),end=c(annotation_overlap_only_2$CpG_end)), #position on chromosome
+                          stat = TheResults_time$t, #t-statistic
+                          diff = TheResults_time$BetaEffectSize, #effect size
+                          ind.fdr = TheResults_time$adj.P.Val, #adjusted p-value
+                          is.sig = TheResults_time$adj.P.Val < 0.005) #p-value threshold
+
+
+names(annotated_only) <- annotation_overlap_only_2$probeID
+
+annotated_only <- sort(annotated_only)
+annotated_only_Canno <- new("CpGannotated",
+                            ranges = annotated_only) #create a "CpGannotated" object to be
+#used in dmrcate
+
+DMR_only <- dmrcate(annotated_only_Canno,
+                    C=2,
+                    min.cpgs = 2,
+                    lambda=1000) #minimum number of CpGs for a region to be a DMR
+
+#Obtain results
+results.ranges_time <- extractRanges(DMR_only,
+                                     genome = "hg38") #2009 annotation of the human genome was hg19 and the 2013 annotation is hg38
+
+
+
+
+#OUR own annotation for each CpG
+library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
+META_matrix=as.matrix(all_results)
+RSobject <- RatioSet(META_matrix, annotation = c(array = "IlluminaHumanMethylationEPIC",
+                                                 annotation = "ilm10b2.hg19"))
+RSanno <- getAnnotation(RSobject)[, c("chr", "pos", "Name",
+                                      "UCSC_RefGene_Name","UCSC_RefGene_Group")]
+
+#Change annotation with our annotation
+RSanno$pos <- annotation[rownames(all_results),"CpG_beg"] #Change hg19 position to hg38 position
+RSanno$UCSC_RefGene_Name <- annotation[rownames(RSanno),"genesUniq"] #Change gene names
+genes <- as.character(RSanno$UCSC_RefGene_Name)
+genes[which(is.na(genes))] <- "" #replace NAs with ""
+RSanno$UCSC_RefGene_Name <- genes #Give Gene names
+RSanno$UCSC_RefGene_Group <- genes
+
+#Obtain better annotation of the DMRs (from previous code)
+annotation_GR <- makeGRangesFromDataFrame(annotation,
+                                          keep.extra.columns=TRUE,
+                                          ignore.strand=FALSE,
+                                          seqinfo=NULL,
+                                          seqnames.field=c("CpG_chrm"),
+                                          start.field="CpG_beg",
+                                          end.field=c("CpG_end"),
+                                          strand.field="probe_strand",
+                                          starts.in.df.are.0based=FALSE)
+genesidx <- as.data.frame(findOverlaps(results.ranges_time, annotation_GR))
+genesover <- tapply(genesidx$subjectHits, genesidx$queryHits,
+                    function(x) annotation_GR$genesUniq_with_enh[x])
+op.A <- sapply(genesover, function(l) paste(unique(unlist(strsplit(as.character(l),split=";"))), collapse = ";"))
+name.A <- names(genesover)
+m.A <- as.numeric(name.A)
+M <- length(results.ranges_time)
+better_annotation <- rep("", M)
+better_annotation[m.A] <- op.A
+#Change to tibble and format
+#results.ranges_onlyy <- as_tibble(results.ranges_only)
+#results.ranges_only$better_annotation <- better_annotation
+#results.ranges_0.005 <- results.ranges_only%>%
+# dplyr::filter(Fisher<0.005)
+
+#RR_only_2 <-as.data.frame (results.ranges_onlyy)
+
+results.ranges_time$better_annotation=better_annotation
+newGR_time=results.ranges_time[results.ranges_time@elementMetadata$Stouffer <0.005&results.ranges_time@elementMetadata$HMFDR <0.005&results.ranges_time@elementMetadata$Fisher<0.005]
+RR_time <-as.data.frame (newGR_time)
+
+write.xlsx(RR_time, "DMRs 4WP without interaction.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+#goregion
+library(missMethyl)
+gst_DMRs<-goregion(
+  newGR,
+  all.cpg = rownames(all_results),
+  collection = "GO",
+  array.type = "EPIC",
+  plot.bias = TRUE,
+  prior.prob = TRUE,
+  anno = RSanno,
+  equiv.cpg = TRUE,
+  fract.counts = TRUE,
+  sig.genes = TRUE
+)
+
+SigGenesInSet=unlist(strsplit(gsaREACTOME["R-HSA-397014","SigGenesInSet"], ","))
+
+#keep getting error when trying to create a CpG annotated object, will hace to try and reinstalling packages, make sure have every table saved
+write.table(pheno_long_select,
+            file="pheno_long_select.txt",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+trial=read.delim("pheno_long_select.txt") #just have to convet factors and characters etc
+
+#boxplot of cpg
+library(data.table)
+GENESMART_B_t=t(Gene_SMART_B)
+cpgs_phenos_GENESMART=cbind(pheno_cons_all,GENESMART_B_t)
+rownames(cpgs_phenos_GENESMART)=colnames(Gene_SMART_B)
+cpgs_phenos_GENESMART_PREs=cpgs_phenos_GENESMART[rownames(cpgs_phenos_GENESMART) %like% "PRE", ]
+cpgs_phenos_GENESMART_PREs$sex=factor(cpgs_phenos_GENESMART_PREs$sex, levels=c("male","female"))
+
+cpgs_phenos_GENESMART_PREs4WP=cpgs_phenos_GENESMART[!rownames(cpgs_phenos_GENESMART) %like% "CON", ]
+cpgs_phenos_GENESMART_PREs4WP$sex=factor(cpgs_phenos_GENESMART_PREs4WP$sex, levels=c("male","female"))
+cpgs_phenos_GENESMART_PREs4WP$Timepoint=factor(cpgs_phenos_GENESMART_PREs4WP$Timepoint, levels=c("PRE","4WP"))
+
+#one Cpg at baseline
+b=ggboxplot(data=cpgs_phenos_GENESMART_PREs, x='sex', y='cg13287763',
+            xlab="", ylab='DNAm at cg13287763',
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  ggtitle("")+
+  rremove("x.text")+
+  rremove("x.ticks")+
+  scale_fill_brewer(palette = "Set2") #GSE= "Sex" and FUSION &GENESMART= "sex"
+
+#1 CpG before and after training faceted by sex
+b=ggboxplot(data=cpgs_phenos_GENESMART_PREs4WP, x='Timepoint', y='cg19645210',
+            xlab="Timepoint", ylab='DNAm at cg19645210 (Beta)',
+            facet.by = "sex",
+            panel.labs =list(sex = c("Males", "Females")),
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  scale_fill_brewer(palette = "Set2") 
+
+#one cpg not faceted by sex, before and after training
+cpgs_phenos_GENESMART_PREs4WP=cpgs_phenos_GENESMART_PREs4WP %>%
+  mutate(across(!c(1:15), as.numeric))
+b=ggboxplot(data=cpgs_phenos_GENESMART_PREs4WP, x='Timepoint', y="cg15733367",
+            xlab="Timepoint", ylab='DNAm at cg15733367 (%)',
+            fill="Timepoint",
+            panel.labs.font = list(size = 12),
+            palette=c("#FFFF99","#CAB2D6"))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")#not working to multiply y by 100 try geom_boxplot:
+
+#cg15733367 and cg01466031
+b=ggplot(cpgs_phenos_GENESMART_PREs4WP, aes(Timepoint, cg01466031*100))+ 
+  geom_boxplot(aes(fill=Timepoint))+
+  scale_fill_manual(values=c("#FFFF99","#CAB2D6"))+
+  labs(x="Timepoint",y="DNAm at cg01466031 (%)")+
+  theme_minimal()+
+  theme(legend.position = "none")
+
+tiff("time pos coeff no interaction.tiff",
+     height = 3,
+     width = 5,
+     units = "in",
+     res = 600)
+b
+dev.off()
+
+#I've noticed that when I addes SG185 he was added at the end instead of 2 before the end, meaning CON and 4WP just for 185 were switched
+imputed_pheno_final_with_CON$uniqueID=print(paste0(imputed_pheno_final_with_CON$ID,"_",imputed_pheno_final_with_CON$Timepoint))
+imputed_pheno_final_with_CON=imputed_pheno_final_with_CON[match(colnames(M_merged_QUT_diagen_CON),imputed_pheno_final_with_CON$uniqueID),]
+
+#dotplot for baseline fitness and methylation
+q=ggplot(cpgs_phenos_GENESMART_PREs, aes(baselinez, cg13287763*100))+ 
+  geom_point(aes(col=sex),size=1)+
+  scale_color_manual(values=c("#66C2A5","#FC8D62"))+
+  labs(x="Fitness z score",y="DNAm at cg13287763 (%)")+
+  theme_minimal()
+# theme(legend.position = "none")
+
+tiff("baselizez DMP pos coeff .tiff",
+     height = 3,
+     width = 5,
+     units = "in",
+     res = 600)
+q
+dev.off()
+
+
+#PCA zscore/sex and time/sex for 1) all cpgs 2)respective DMPs
+#for GeneSMART to get only PRE
+library("FactoMineR")
+library("factoextra")
+library("RColorBrewer")
+
+#do on residuals bcs batch effect
+design_resid <- model.matrix(~batch,
+                             pheno_cons_all)
+
+
+corfitRESID <- duplicateCorrelation(Gene_SMART_B,
+                                    design_resid,
+                                    block = pheno_cons_all$ID) #watch out this takes 30 min
+
+#corfitRESID$consensus of beta with 7 cons=0.2573992 (~batch,pheno_cons_all)
+fitRESID = lmFit(Gene_SMART_B,
+                 design_resid,
+                 block=pheno_cons_all$ID,
+                 correlation=corfitRESID$consensus) #I have chosen the option "robust" which will downplay the influence of outliers. This takes significantly more time for your computer to run but is more robust and is always my preference.
+
+
+
+fitRESID2 <- eBayes(fitRESID)
+
+
+residuals_batch=residuals(fitRESID2,Gene_SMART_B)
+
+write.table(residuals_batch,
+            file="residuals_batch (adj for batch).txt",
+            quote=FALSE,
+            row.names=TRUE,
+            col.names=TRUE,
+            sep='\t')
+
+#make residuals table for PCA
+residuals_B_t=t(residuals_batch)
+cpgs_phenos_GENESMART=cbind(pheno_cons_all,residuals_B_t)
+rownames(cpgs_phenos_GENESMART)=colnames(residuals_batch)
+
+
+cpgs_phenos_GENESMART_PREs4WP=cpgs_phenos_GENESMART[!rownames(cpgs_phenos_GENESMART) %like% "CON", ]
+cpgs_phenos_GENESMART_PREs4WP$sex=factor(cpgs_phenos_GENESMART_PREs4WP$sex, levels=c("male","female"))
+cpgs_phenos_GENESMART_PREs4WP$Timepoint=factor(cpgs_phenos_GENESMART_PREs4WP$Timepoint, levels=c("PRE","4WP"))
+
+# DMPsinGENESmart=residuals_batch[rownames(residuals_batch) %in% rownames(TheResults),]
+# 
+# dat=scale(DMPsinGENESmart[,]) #Transform each variable to a z-score
+# dat_t=t(dat)
+# res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+# Time=merged_pheno$Timepoint
+# Sex=merged_pheno$sex
+# PCAplot=fviz_pca_ind(res.pca, geom.ind = "none",title="")+
+#   geom_point(aes(shape=Time,color=Sex,size=1.5))+
+#   scale_shape_manual(values = c(32, 19))
+# 
+# fviz_pca_ind(res.pca, label="none", habillage=ThePhenos$Timepoint)
+
+#or (bcs dots showing up huge)
+#go above and get PRE4wP Beta (cpgs_phenos_GENESMART_PREs4WP)
+B_DMPs_time_PREs4WPs=cpgs_phenos_GENESMART_PREs4WP[,colnames(cpgs_phenos_GENESMART_PREs4WP) %in% rownames(TheResults)]
+# #bring back phenos that just removed
+# ThePhenos=cpgs_phenos_GENESMART_PREs4WP[,c(1:15)]
+B_DMPs_time_PREs4WPs=cbind(ThePhenos,B_DMPs_time_PREs4WPs)
+
+
+#this is working
+res.pca <- prcomp(B_DMPs_time_PREs4WPs[, -c(1:15)],  scale = TRUE)
+
+
+fviz_pca_ind(res.pca, geom.ind = "point",pointsize = .05,title="")+
+  geom_point(aes(shape=Sex,color=Time))+
+  scale_color_manual(values=c("#66C2A5","#FC8D62"))
+
+
+#save the impputed pheno final with 7 controls for study 3
+setwd("~/git/Study 3")
+pheno_cons_all=write.table(pheno_cons_all,
+                           file="pheno_cons_all.txt",
+                           quote = FALSE,
+                           row.names = FALSE,
+                           col.names = TRUE,
+                           sep="\t")
+
+#load pheno
+pheno_cons_all=read.delim("pheno_cons_all.txt")
+pheno_cons_all$Timepoint=factor(pheno_cons_all$Timepoint,levels=c("PRE","CON","4WP"))
+pheno_cons_all$sex=factor(pheno_cons_all$sex)
+pheno_cons_all$batch=factor(pheno_cons_all$batch)
+
+#pathway enrichment with reactome
+library(AnnotationDbi)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(stringr)
+library(org.Hs.eg.db)
+library(dplyr)
+library(methylGSA)
+library(reactome.db)#had to add this for reactome.db part to work
+tempAnnot= methylGSA:::getAnnot("EPIC")
+
+temp = unique(tempAnnot$UCSC_RefGene_Name)
+
+minsize=100
+maxsize=500
+gene.entrez = suppressMessages(
+  AnnotationDbi::select(org.Hs.eg.db, temp, columns = "ENTREZID",
+                        keytype = "SYMBOL")$ENTREZID)
+reactome.df = suppressMessages(
+  AnnotationDbi::select(reactome.db, gene.entrez, columns = "REACTOMEID",
+                        keytype = "ENTREZID"))
+reactome.df = na.omit(reactome.df)
+reactom2entrez = reactome.df$ENTREZID
+names(reactom2entrez) = reactome.df$REACTOMEID
+reactome.list = split(reactom2entrez, names(reactom2entrez))
+reactome.list.sizes = vapply(reactome.list, length, FUN.VALUE = 1)
+reactome.list.sub =
+  reactome.list[
+    reactome.list.sizes>=minsize & reactome.list.sizes<=maxsize]
+library(missMethyl)
+gsaREACTOME_time=gsameth(sig.cpg=TheResults_time$CpGs,
+                         all.cpg = rownames(all_results),
+                         collection = reactome.list.sub,
+                         array.type = "EPIC",
+                         plot.bias = TRUE,
+                         prior.prob = TRUE,
+                         anno = NULL, #i dont know that our anno is good here, hg38 mixing with hg19 
+                         equiv.cpg = TRUE,
+                         fract.counts = TRUE,
+                         sig.genes = TRUE
+) 
+
+#add pathways
+Description = getDescription(rownames(gsaREACTOME_DMPs), "Reactome")
+gsaREACTOME_DMPs = cbind(Description, gsaREACTOME_DMPs)
+write.xlsx(gsaREACTOME_DMPs, "Reactome with baseline fitness regardless of sex.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+GO_DMPs=gometh(sig.cpg=TheResults_time$CpGs,
+               all.cpg = rownames(all_results),
+               collection = "GO",
+               array.type = "EPIC",
+               plot.bias = TRUE,
+               prior.prob = TRUE,
+               anno = NULL,
+               equiv.cpg = TRUE,
+               fract.counts = TRUE,
+               sig.genes = TRUE
+) 
+
+GO_sig=GO_DMPs[GO_DMPs$FDR<0.005,]
+
+GO_DMRs_baselinez=gometh(sig.cpg=rownames(TheResults_baselinez),
+                         all.cpg = rownames(all_results_baselinez),
+                         collection = "GO",
+                         array.type = "EPIC",
+                         plot.bias = TRUE,
+                         prior.prob = TRUE,
+                         anno = NULL,
+                         equiv.cpg = TRUE,
+                         fract.counts = TRUE,
+                         sig.genes = TRUE
+) 
+
+write.xlsx(GO_DMRs_baselinez, "GO terms with DMRs baselinez.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+write.xlsx(TheResults_time, "DMPs with 4 weeks HIIT no interaction.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+
+
+#number of genes annotated, add gene names to DMPs results
+TheResults_time$probeID=rownames(TheResults_time)
+anno_baselinez=annotation[rownames(TheResults_time),]
+TheResults_time=left_join(TheResults_time,anno_baselinez,by="probeID")
+DMPgenes=strsplit(as.character(TheResults_time$geneNames),split=";") #there were repeats because after ; there was a space..so remove white space
+DMPgenes_unlisted=unlist(DMPgenes)
+DMPgenes_unique=unique(DMPgenes_unlisted)
+
+#genes annotated to interaction
+TheResults_sextime$probeID=rownames(TheResults_sextime)
+anno_sextime=annotation[rownames(TheResults_sextime),]
+TheResults_sextime=left_join(TheResults_sextime,anno_sextime,by="probeID")
+DMPgenes=strsplit(as.character(TheResults_sextime$geneNames),split=";") #there were repeats because after ; there was a space..so remove white space
+DMPgenes_unlisted=unlist(DMPgenes)
+DMPgenes_unique=unique(DMPgenes_unlisted)
+
+
+#for baseline z, since there are DMRs, check genes annotated to DMRs
+DMRgenes=strsplit(as.character(newGR_time$better_annotation),split=";") #there were repeats because after ; there was a space..so remove white space
+DMRgenes_unlisted=unlist(DMRgenes)
+DMRgenes_unique=unique(DMRgenes_unlisted) 
+
+library(openxlsx)
+library(readxl)
+write.xlsx(TheResults_sextime, "DMPs with time and sex 0.05.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+
+#overlap with findings from Chpman lifelong training, just to id some potentially interesting genes
+setwd("~/git/Study 3")
+Chapman_females=read_excel("Chapman_genes.xlsx",sheet=1)
+overlapping_with_fem=DMPgenes_unique[DMPgenes_unique %in% Chapman_females$gene_name]
+
+Chapman_males=read_excel("Chapman_genes.xlsx",sheet=2)
+overlapping_with_mal=DMPgenes_unique[DMPgenes_unique %in% Chapman_males$gene_name]
+
+#combine MC-ME with FC-FE 
+Chapman_combined=rbind(Chapman_females,Chapman_males)
+
+#hypergeo test for enrichment
+#convert ensembl ID to entrez ID
+library(biomaRt)
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+## Ensembl IDs of interest
+genenames <- Chapman_combined$gene_name
+
+## Run biomaRt query
+entrezs <- getBM(filters = "external_gene_name", 
+                 attributes = c("external_gene_name", "entrezgene_id"),
+                 values = genenames, 
+                 mart = mart)
+
+
+gsa_hypergeo_enrich_chapman=gsameth(sig.cpg=TheResults_baselinez$Markername,
+                                    all.cpg = rownames(all_results_baselinez),
+                                    collection = entrezs$entrezgene_id,
+                                    array.type = "EPIC",
+                                    plot.bias = TRUE,
+                                    prior.prob = TRUE,
+                                    anno = NULL,
+                                    equiv.cpg = TRUE,
+                                    fract.counts = TRUE,
+                                    sig.genes = TRUE
+) #FDR=4.649282e-09
+
+SigGenesInSet=unlist(strsplit(gsa_hypergeo_enrich_chapman[1,"SigGenesInSet"], ","))
+
+write.xlsx(SigGenesInSet, "Chapman overlap baselinez.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+
+extra_interesting=overlapping_with_fem[overlapping_with_fem %in% overlapping_with_mal] #three genes are different in males and females after training, in my study and in chapmanstudy 
+
+write.xlsx(RR_baselinez, "DMRs with fitness regardless of sex 0.005.xlsx", sheetName = "Sheet1",
+           col.names = TRUE, row.names = TRUE, append = FALSE)
+
+#check hypergeo for DEGs time with Lindholm DEG/DMPs with training
+Lindholm_DEG_DMPs=read_excel("Lindholm DEG DMP pairs training_Supplementary Table S12.xlsx")
+SigGenesInSet=unlist(strsplit(Lindholm_DEG_DMPs[1,"SigGenesInSet"], ","))
+
+#hypergeo test for enrichment
+#convert ensembl ID to entrez ID
+library(biomaRt)
+mart <- useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+
+## Ensembl IDs of interest
+genenames <- Lindholm_DEG_DMPs$SYMBOL
+
+## Run biomaRt query
+entrezs <- getBM(filters = "external_gene_name", 
+                 attributes = c("external_gene_name", "entrezgene_id"),
+                 values = genenames, 
+                 mart = mart)
+
+
+gsa_hypergeo_enrich_lindholm=gsameth(sig.cpg=TheResults_time$CpGs,
+                                     all.cpg = rownames(all_results),
+                                     collection = entrezs$entrezgene_id,
+                                     array.type = "EPIC",
+                                     plot.bias = TRUE,
+                                     prior.prob = TRUE,
+                                     anno = NULL,
+                                     equiv.cpg = TRUE,
+                                     fract.counts = TRUE,
+                                     sig.genes = TRUE
+) #pval=4.581087e-07
+
+SigGenesInSet=unlist(strsplit(gsa_hypergeo_enrich_lindholm[1,"SigGenesInSet"], ","))
+
+#should prob do chrom state and island status of baselinez DMPs and exercise DMPs
+#chromatin states
+#add chromatin state from annotation to results and graph
+sig=rownames(TheResults_baselinez)
+sig_w_chr_st=annotation[sig,]
+sig_w_chr_st$DMPstatus="DMP"
+nonsig=rownames(all_results_baselinez[which(all_results_baselinez$adj.P.Val>0.005),]) #meta_filtered= total 633,645 cpgs
+nonsig_w_chr_st=annotation[nonsig,]
+nonsig_w_chr_st$DMPstatus="non-DMP"
+chromatin_states_combined=rbind(sig_w_chr_st,nonsig_w_chr_st)
+
+library(plyr)
+DMPs_to_graph=sig_w_chr_st[!grepl(',',sig_w_chr_st$E107),] #this will remove those few that are annotated to multiple chromatin states!!! so DMPs changes from 56,813 to 56,762
+count_DMPs=dplyr::count(DMPs_to_graph, E107)
+colnames(count_DMPs)=c("E107","number of DMPs")
+count_DMPs$`Percentage_of_DMPs`=(count_DMPs$`number of DMPs`/nrow(DMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 26,525?
+count_DMPs$DMPstatus="DMPs"
+
+nonDMPs_to_graph=nonsig_w_chr_st[!grepl(',',nonsig_w_chr_st$E107),]
+count_nonDMPs=dplyr::count(nonDMPs_to_graph, E107)
+colnames(count_nonDMPs)=c("E107","number of nonDMPs")
+count_nonDMPs$Percentage_of_nonDMPs=(count_nonDMPs$`number of nonDMPs`/nrow(nonDMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 673025 (dim of nonsig_w_chr_st) this is for ones that are annotated to two chrom states?
+count_nonDMPs$DMPstatus="non-DMPs"
+
+chromatin_states_combined=cbind(count_DMPs,count_nonDMPs)
+
+chromatin_states_combined2=chromatin_states_combined[,-1]
+
+
+library(tidyverse)
+chrom_stat_longer=pivot_longer(data=chromatin_states_combined2,
+                               cols=contains("Percentage"),
+                               names_to = "DMP_status",
+                               values_to = "Percentage_of_CpGs")
+
+
+library(ggplot2)
+ggplot(chrom_stat_longer,aes(fill=DMP_status,x=E107,y=Percentage_of_CpGs))+
+  geom_bar(position=position_dodge(),stat="identity")+
+  theme_minimal()+
+  scale_fill_manual(values=c('red','black')) #this is nice and all but want to facet by E107 and split on hyper hypo
+
+hyper=rownames(TheResults_baselinez[TheResults_baselinez$BetaEffectSize>0,])
+hypo=rownames(TheResults_baselinez[TheResults_baselinez$BetaEffectSize<0,])
+nonsig=rownames(all_results_baselinez[which(all_results_baselinez$adj.P.Val>0.005),]) #meta_filtered= total 633,645 cpgs
+
+hyper_w_chr_st=annotation[hyper,13:14]
+hypo_w_chr_st=annotation[hypo,13:14]
+nonsig_w_chr_st=annotation[nonsig,13:14]
+
+library(plyr) #must do this to use "freq" in count function, otherwise use "n"
+
+hyper_to_graph=hyper_w_chr_st[!grepl(',',hyper_w_chr_st$E107),]
+count_hyper=plyr::count(hyper_to_graph, "E107") #later do 108
+count_hyper$Percentage=(count_hyper$freq/nrow(DMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 26,525?
+count_hyper$DMPstatus="DMPs"
+count_hyper$DMPstatus2="Hyper"
+
+hypo_to_graph=hypo_w_chr_st[!grepl(',',hypo_w_chr_st$E107),]
+count_hypo=plyr::count(hypo_to_graph, "E107") #later do 108
+count_hypo$Percentage=(count_hypo$freq/nrow(DMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 26,525?
+count_hypo$DMPstatus="DMPs"
+count_hypo$DMPstatus2="Hypo"
+
+nonDMPs_to_graph=nonsig_w_chr_st[!grepl(',',nonsig_w_chr_st$E107),]
+count_nonDMPs=plyr::count(nonDMPs_to_graph, "E107")
+count_nonDMPs$Percentage=(count_nonDMPs$freq/nrow(nonDMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 673025 (dim of nonsig_w_chr_st) this is for ones that are annotated to two chrom states?
+count_nonDMPs$DMPstatus="non-DMPs"
+count_nonDMPs$DMPstatus2="non-DMPs"
+
+chrom_stat_all <- rbind(count_hyper,count_hypo,count_nonDMPs)
+
+chrom_stat_all$E107=as.character(chrom_stat_all$E107)
+s<-strsplit(chrom_stat_all$E107,'[_]')
+s=unlist(s)
+s=s[c(FALSE,TRUE)] #to extract everything after _ THERE MUST BE AN EASIER WAY BUT THIS WORKED!
+
+chrom_stat_all$E107=s
+chrom_stat_all$E107=factor(chrom_stat_all$E107,levels=c("TssA", "TssAFlnk","TxFlnk","Tx","TxWk","EnhG","Enh","ZNF/Rpts","Het","TssBiv", "BivFlnk","EnhBiv" ,"ReprPC" , "ReprPCWk" ,"Quies"))
+
+#to make the chrom states nicer FIX THIS ITS OUT OF ORDER
+supp.labs<- c("Active TSS","Flanking active TSS","Transcr. at gene 5' and 3'","Strong transcription","Weak transciption","Genic enhancers","Enhancers","ZNF genes & repeats","Heterochromatin","Bivalent/poised TSS","Flanking bivalent TSS/Enh","Bivalent enhancer","Repressed polycomb","Weak repressed polycomb","Quiescent/low")
+names(supp.labs) <- c("TssA", "TssAFlnk","TxFlnk","Tx","TxWk","EnhG","Enh","ZNF/Rpts","Het","TssBiv", "BivFlnk","EnhBiv" ,"ReprPC" , "ReprPCWk" ,"Quies")
+
+p=ggplot(data=chrom_stat_all, aes(x=DMPstatus, y=Percentage,fill=DMPstatus2)) + 
+  geom_bar(stat="identity")+
+  facet_grid(~E107, labeller = labeller(E107 = supp.labs))+
+  theme_classic()+
+  scale_fill_manual(values=c("#E31A1C","#1F78B4",'black'))+
+  xlab("")+
+  ylab("Percentage of DMPs or non-DMPs")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  labs(fill = "DMP status")+
+  theme(legend.position = "topright")+
+  theme(strip.text.x = element_text(size=7,angle = 90))+
+  theme(strip.background = element_rect(
+    color="gray", fill="gray", size=1.5, linetype="solid"
+  ))
+
+
+
+tiff("Chromatin states with DMPs baseline z 005.tiff",
+     height = 5,
+     width = 12.5,
+     units = "in",
+     res = 600)
+p
+dev.off()
+
+
+
+#chi2 for just DMP vs non DMP chrom states
+
+rownames(chromatin_states_combined)=chromatin_states_combined$E107
+x2_chrom=chromatin_states_combined %>% dplyr::select(`number of DMPs`,`number of nonDMPs`)
+chisq_chr <- chisq.test(x2_chrom)
+chisq_chr
+library(corrplot)
+corrplot(chisq_chr$residuals, is.cor = FALSE)
+chisq_chr$p.value #2.2e-16
+contrib <- 100*chisq_chr$residuals^2/chisq_chr$statistic
+corrplot(contrib, is.cor = FALSE)
+
+#chi2 for for hyper hypo and nonDMPS chromatin state
+
+#redo count hyper,hypo,nondmp bcs they have too many unecessary columns that I added to make the bar chart
+count_hyper=plyr::count(hyper_to_graph, "E107") #later do 108
+count_hypo=plyr::count(hypo_to_graph, "E107") #later do 108
+count_nonDMPs=dplyr::count(nonDMPs_to_graph, E107)
+
+forx2=cbind(count_hyper,count_hypo,count_nonDMPs)
+rownames(forx2)=forx2$E107
+colnames(forx2)=c("E107","hyper","whatevs","hypo","whajh","non-DMPs")
+forX2=forx2 %>% dplyr::select(hyper,hypo,`non-DMPs`)
+#to remove the 1_ etc from rownames for beauty of corrplot, and put in correct order
+s<-strsplit(rownames(forX2),'[_]')
+s=unlist(s)
+s=s[c(FALSE,TRUE)]
+rownames(forX2)=s
+forX2$E107=factor(rownames(forX2),levels=c("TssA", "TssAFlnk","TxFlnk","Tx","TxWk","EnhG","Enh","ZNF/Rpts","Het","TssBiv", "BivFlnk","EnhBiv" ,"ReprPC" , "ReprPCWk" ,"Quies"))
+forX2=arrange(forX2,E107)
+rownames(forX2)=forX2$E107
+forX2=forX2[,-4]
+
+chisq_chr <- chisq.test(forX2)
+chisq_chr
+chisq_chr$p.value #2.2e-16
+corrplot(chisq_chr$residuals, is.cor = FALSE,cl.ratio=1.5,tl.col="black")
+contrib <- 100*chisq_chr$residuals^2/chisq_chr$statistic
+corrplot(contrib, is.cor = FALSE,tl.col="black",cl.offset=1,cl.ratio=0.7)
+
+#island status
+index=rownames(TheResults_baselinez)
+META_matrix=as.matrix(all_results_baselinez)
+grset <- makeGenomicRatioSetFromMatrix(
+  mat=META_matrix,
+  array = "IlluminaHumanMethylationEPIC",
+  annotation = "ilm10b4.hg19"
+)
+grset_sig=grset[index]
+nonsig=rownames(all_results_baselinez[which(all_results_baselinez$adj.P.Val>0.005),]) #meta_filtered= total 633,645 cpgs
+grset_nonsig=grset[nonsig]
+prop_DMPs=prop.table(table(getIslandStatus(grset_sig))) #this works too but doesnt give exact number they want
+prop_nonDMPS=prop.table(table(getIslandStatus(grset_nonsig)))
+props=rbind(prop_DMPs,prop_nonDMPS)
+props=t(props)
+props=as.data.frame(props)
+props$DMPs=props$prop_DMPs*100
+props$nonDMPs=props$prop_nonDMPS*100
+
+#make both DMPs and nonDMPS appear on bar graph
+props$islandstatus=rownames(props)
+library(tidyverse)
+props_long=props %>%
+  gather("DMPness","percentage",-islandstatus)
+realprops=props_long[9:16,]
+realprops$islandstatus <- factor(realprops$islandstatus,levels = c("Island", "Shore", "Shelf", "OpenSea"))#change order on x axis
+bb=ggplot(realprops,aes(x=islandstatus,y=percentage,fill=DMPness))+
+  geom_col(position="dodge")+
+  xlab("Island Status")+
+  ylab("Percentage of CpGs")+
+  theme_minimal()+
+  theme(legend.title=element_blank())+
+  scale_fill_manual(values=c("#8DA0CB",'black'))
+
+#chi2 for island status
+props$num_of_DMP=props$prop_DMPs*length(grset_sig)
+props$num_of_nonDMP=props$prop_nonDMPS*length(grset_nonsig)
+
+x2=props %>% dplyr::select(num_of_DMP,num_of_nonDMP)
+chisq <- chisq.test(x2)
+chisq
+library(corrplot)
+corrplot(chisq$residuals, is.cor = FALSE)
+chisq$p.value #p-value < 2.2e-16 chisq$statistic
+
+# Contibution in percentage (%)
+contrib <- 100*chisq$residuals^2/chisq$statistic
+corrplot(contrib, is.cor = FALSE)
+
+
+
+tiff(filename="Corrplot contributors island status DMPs and nonDMPs.tiff")
+corrplot(contrib, is.cor = FALSE)
+dev.off()
+
+###split up into hyper and hypo for island status
+#must run code from above for hyper, hypo, nonsig, and grset extract stati
+results=data.frame(TheResults_baselinez)
+rownames(results)=rownames(TheResults_baselinez)
+hyper=rownames(results[which(results$BetaEffectSize>0),])
+hypo=rownames(results[which(results$BetaEffectSize<0),])
+nonsig=rownames(all_results_baselinez[which(all_results_baselinez$adj.P.Val>0.005),])
+DMPs_to_graph=rownames(all_results_baselinez[which(all_results_baselinez$adj.P.Val<0.005),])
+grset_hyper=grset[hyper]
+grset_hypo=grset[hypo]
+grset_nonsig=grset[nonsig]
+
+prop_hyper=data.frame(getIslandStatus(grset_hyper)) #this works too but doesnt give exact number they want
+count_hyper=plyr::count(prop_hyper, "getIslandStatus.grset_hyper.") 
+count_hyper$Percentage=(count_hyper$freq/length(DMPs_to_graph))*100 #bcs removed the ones that were annotated to both, or should divide by 26,525?
+count_hyper$DMPstatus="DMPs"
+count_hyper$DMPstatus2="Hyper"
+
+prop_hypo=data.frame(getIslandStatus(grset_hypo))
+count_hypo=plyr::count(prop_hypo, "getIslandStatus.grset_hypo.") 
+count_hypo$Percentage=(count_hypo$freq/length(DMPs_to_graph))*100 
+count_hypo$DMPstatus="DMPs"
+count_hypo$DMPstatus2="Hypo"
+
+prop_nonDMPS=data.frame(prop.table(table(getIslandStatus(grset_nonsig)))) #proptable only good for dmp vs nondmp, for hyper and hypo need to do manually like did for chrom state
+prop_nonDMPS$Percentage=prop_nonDMPS$Freq*100 
+prop_nonDMPS$DMPstatus="non-DMPs"
+prop_nonDMPS$DMPstatus2="non-DMPs"
+
+colnames(count_hyper)=c("CGIposition","freq","Percentage","DMPstatus","DMPstatus2")
+colnames(count_hypo)=c("CGIposition","freq","Percentage","DMPstatus","DMPstatus2")
+colnames(prop_nonDMPS)=c("CGIposition","freq","Percentage","DMPstatus","DMPstatus2")
+
+island_status_all <- rbind(count_hyper,count_hypo,prop_nonDMPS)
+
+##this is to split by hyper and hypo in island status!
+island_status_all$CGIposition <- factor(island_status_all$CGIposition,levels = c("Island", "Shore", "Shelf", "OpenSea"))#change order on x axis
+
+
+gg=ggplot(data=island_status_all, aes(x=DMPstatus, y=Percentage,fill=DMPstatus2)) + 
+  geom_bar(stat="identity")+
+  facet_grid(~CGIposition)+
+  theme_classic()+
+  scale_fill_manual(values=c("#E31A1C","#1F78B4",'black'))+
+  xlab("")+
+  ylab("Percentage of DMPs or non-DMPs")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))+
+  labs(fill = "DMP status")+
+  theme(legend.position = "topright")
+
+
+
+tiff("Island status of DMPs- hyper & hypo baseline z.tiff",
+     height = 3,
+     width = 3.5,
+     units = "in",
+     res = 600)
+gg
+dev.off() 
+
+
+
+#chi2 for island status on hyper/hypo/non
+#need to get the counts for nondmps, just reget all so the columns are less, and more organized
+count_hyper=plyr::count(prop_hyper, "getIslandStatus.grset_hyper.") 
+
+count_hypo=plyr::count(prop_hypo, "getIslandStatus.grset_hypo.") 
+
+prop_nonDMPS=data.frame(getIslandStatus(grset_nonsig)) #proptable only good for dmp vs nondmp, for hyper and hypo need to do manually like did for chrom state
+count_nonDMPS=plyr::count(prop_nonDMPS, "getIslandStatus.grset_nonsig.") 
+
+islandchi=cbind(count_hyper,count_hypo,count_nonDMPS)
+
+rownames(islandchi)=islandchi$getIslandStatus.grset_hyper.
+islandchi=islandchi[,c(2,4,6)]
+colnames(islandchi)=c("hyper","hypo","non-DMPs")
+
+#reorder for corrplot
+
+islandchi$islands <- factor(rownames(islandchi),levels = c("Island", "Shore", "Shelf", "OpenSea"))#change order on x axis
+islandchi=arrange(islandchi,islands)
+rownames(islandchi)=islandchi$islands
+colnames(islandchi)=c("hyper","hypo",'nonDMPs')
+islandchi=data.frame(islandchi[,-4])
+
+
+chisq <- chisq.test(islandchi)
+chisq
+library(corrplot)
+corrplot(chisq$residuals, is.cor = FALSE, cl.ratio=0.5,tl.col="black")
+chisq$p.value #p-value < 2.2e-16 chisq$statistic
+
+
+
+# Contibution in percentage (%) #this better for paper
+contrib <- 100*chisq$residuals^2/chisq$statistic
+corrplot(contrib, is.cor = FALSE,cl.ratio=0.3,tl.col="black")
+
+#baseline z and sex interaction
+#interaction of time and baseline z to address limitation (fitter people less improvements), model ~sex+baselinez*Timepoint+Age_PRE+batch, M with 137 = 0.2308556
+design <- model.matrix(~sex+baselinez*Timepoint+Age_PRE+batch,
+                       pheno_cons_all)
+
+corfit_zscore_time <- duplicateCorrelation(M_merged_QUT_diagen_7,
+                                           design,
+                                           block = pheno_cons_all$ID) 
+
+
+design <- model.matrix(~sex+baselinez+Timepoint+Age_PRE+batch,
+                       pheno_cons_all)
+
+corfit_B_nointeraction<- duplicateCorrelation(Gene_SMART_B,
+                                              design,
+                                              block = pheno_cons_all$ID) 
+
+#corfit consensus for ~sex*baselinez+Timepoint+Age_PRE+batch+TypeI males and females with 7 controls= 0.2265102 for M
+#corfit consensus for ~sex*baselinez+Timepoint+Age_PRE+batch males and females with 7 controls=0.2268304  for M
+
+fit = lmFit(M_merged_QUT_diagen_7,
+            design,
+            block=pheno_cons_all$ID,
+            correlation=0.2308556) 
+
+fit2 <- eBayes(fit)
+baselinez_results2=topTable(fit2,
+                            coef = "baselinez:Timepoint4WP",
+                            number = nrow(M_merged_QUT_diagen_7),
+                            p.value = 1)
+#12 DMPs with baselinez:sexmale
+
+##################try PI score for DNAm, sex*time##############
+
+results_sextime_DNAmM$pi_unad=abs(results_sextime_DNAmM$BetaEffectSize)*(-log10(results_sextime_DNAmM$adj.P.Val))
+results_sextime_DNAmM$PI=10^-results_sextime_DNAmM$pi_unad
+results_sextime_DNAmfinal=results_sextime_DNAmM[results_sextime_DNAmM$PI<0.005,] 
+
+
+
+results_sextime_DNAmM <- results_sextime_DNAmM %>%
+  dplyr::arrange(desc(PI))
+Proteins1=rownames(all_results)[1:20]
+results_sextime_DNAmM$CpG=rownames(results_sextime_DNAmM)
+all_results = mutate(results_sextime_DNAmM, sig=ifelse(results_sextime_DNAmM$PI<0.005, "Sig", "Not Sig"))
+all_results = mutate(all_results, coef=ifelse(all_results$BetaEffectSize<0, "neg", "pos"))
+all_results = mutate(all_results, color=ifelse(all_results$PI>0.005,"black",ifelse(all_results$PI<0.005&all_results$coef=="neg","blue","red")))#for some reason worked this way and not when i did adjp> so above two lines are kind of extra but helped to make sure it was correct
+CpGs=rownames(all_results)
+all_results=data.frame(CpGs,all_results)
+#ifelse- "if its met" "it will do this", volcano
+all_results$color<-as.factor(all_results$color)
+p=ggplot(all_results, aes(BetaEffectSize, -log10(P.Value))) +
+  geom_point(aes(col=color),size=0.3)+
+  scale_color_manual(values=c("black","#1F78B4", "#E31A1C"))+
+  labs(x="% DNAm diff. bwtn males compared to females following HIIT",y="-log10(p-value)")+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  #xlim(-3, 3)+
+  #ylim(0,8)+
+  coord_cartesian(clip = 'off')+
+  ggrepel::geom_text_repel(data=all_results[nrow(all_results)-20:nrow(all_results),],
+                           aes(label=CpGs),
+                           size=2)
+
+
+
+
+tiff("Volcano plot for DNAm sextime_PI.tiff",
+     height=4.5,
+     width=4.5,
+     units="in",
+     res=600)
+p
+dev.off()
+
+
+#add SE for sarah (from B)
+SE <- fitB2$sigma * fitB2$stdev.unscaled
+
+SE <- SE[rownames(results_sextime_DNAmM),"sexmale:Timepoint4WP"]
+results_Sarah <- cbind(results_sextime_DNAmM,SE)
+library(openxlsx)
+write.xlsx(results_Sarah, "allCpGs_sextime_Sarah.xlsx", sheetName = "Sheet1",
+           colNames = TRUE, rowNames = TRUE, append = FALSE)
+
+
+#impute VO2max since didnt save individual values, only z scores, accidentally
+#TOTAL of 5 VO2max values, 6 LT, and 3 WP values imputed
+setwd("~/git/Study 3")
+pheno_long_select=read.delim("pheno_long_select.txt")
+
+library(mice)
+#shortened version (first time imputing had more info on imp) 
+
+#Use SI_zscore data subset
+md.pattern(pheno_long_select)
+#For mice to work, we need to ensure the variables we want to impute are
+#in the right format (numeric, factor, etc.)
+pheno_long_select
+pheno_long_select$Timepoint=factor(pheno_long_select$Timepoint,levels=c("PRE","4WP"))
+pheno_long_select$sex=factor(pheno_long_select$sex,levels=c("male","female"))
+#examine the number of missing cases in a table format and proportion of missing
+missing.indicator=data.frame(is.na(pheno_long_select))
+propMissing=apply(missing.indicator, 2, mean)
+#To impute the missing data, use the mice() function
+pred_mat=quickpred(pheno_long_select, mincor = 0.25) #quickly selects data that has min corr of 0.25
+imputed <- mice(data = pheno_long_select, #dataset containing missing values
+                m =  5, #number of imputations you want (default = 5)
+                #method = NULL. It tells the algorithm HOW it will impute the data, depending on data type (continuous variable, factor with 1 or more levels)
+                print=F,
+                pred=pred_mat
+)
+#Have a look at the summary of imputations
+imputed
+#To access imputed values:
+imputed$imp
+plot.new()
+plot(imputed)
+dev.off()
+
+#Calculate z-score in the imputed data (wpeak-ave)/std for each sex seperately then combine
+long1=complete(imputed, action = 'long', include = TRUE)
+# mean(impfem$VO2max_rel, na.rm=TRUE)
+# sd(impfem$VO2max_rel, na.rm=TRUE)
+# mean(impfem$Wpeak_rel, na.rm=TRUE)
+# sd(impfem$Wpeak_rel, na.rm=TRUE)
+# mean(impfem$LT_rel, na.rm=TRUE)
+# sd(impfem$LT_rel, na.rm=TRUE)
+
+long1=long1%>%
+  mutate(Wpeak_zscore_PRE=(Wpeak_rel_PRE-mean(long1$Wpeak_rel_PRE, na.rm=TRUE))/sd(long1$Wpeak_rel_PRE, na.rm=TRUE))%>%
+  mutate(LT_zscore_PRE=(LT_rel_PRE-mean(long1$LT_rel_PRE, na.rm=TRUE))/sd(long1$LT_rel_PRE, na.rm=TRUE))%>%
+  mutate(VO2max_zscore_PRE=(VO2max_rel_PRE-mean(long1$VO2max_rel_PRE, na.rm=TRUE))/sd(long1$VO2max_rel_PRE, na.rm=TRUE))%>%
+  mutate(zscore_PRE=(Wpeak_zscore_PRE+LT_zscore_PRE+VO2max_zscore_PRE)/3)%>%
+  mutate(Wpeak_zscore_4WP=(Wpeak_rel_4WP-mean(long1$Wpeak_rel_4WP, na.rm=TRUE))/sd(long1$Wpeak_rel_4WP, na.rm=TRUE))%>%
+  mutate(LT_zscore_4WP=(LT_rel_4WP-mean(long1$LT_rel_4WP, na.rm=TRUE))/sd(long1$LT_rel_4WP, na.rm=TRUE))%>%
+  mutate(VO2max_zscore_4WP=(VO2max_rel_4WP-mean(long1$VO2max_rel_4WP, na.rm=TRUE))/sd(long1$VO2max_rel_4WP, na.rm=TRUE))%>%
+  mutate(zscore_4WP=(Wpeak_zscore_4WP+LT_zscore_4WP+VO2max_zscore_4WP)/3) 
+
+imputed2=as.mids(long1)
+pheno_long_select_imputed=complete(imputed2, 3)
+
+write.table(pheno_long_select_imputed,
+            file="pheno_imp_withVO2.txt",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+
+#after running limma, to begin bacon
+###correct for inflation of EWAS
+SE <- fit2$sigma * fit2$stdev.unscaled
+
+SE <- SE[rownames(results_genderbaselineVO2_M),"GenderMale:baselineVO2"]
+results <- cbind(results_genderbaselineVO2_M,SE)
+
+
+
+#Save results, need it in a format good for METAL
+CPG <- rownames(results) #name of marker (CpG)
+ALLELE1 <- rep(1,nrow(results)) #fake allele info (not important)
+ALLELE2 <- rep(2,nrow(results)) #fake allele info (not important)
+TESTSTAT <- results$t #t-statistic
+PVALUE <- results$P.Value #p-value
+EFFECTSIZE <- results$logFC #effect size
+SE <- results$SE #standard error
+results = data.frame(CPG,
+                     ALLELE1,
+                     ALLELE2,
+                     TESTSTAT,
+                     PVALUE,
+                     EFFECTSIZE,
+                     SE)
+write.table(results,
+            file="results_M_Gender_baselineVO2.tbl",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+library(bacon)
+
+setwd("~/Git NEW/Study 3 NEW/E-MTAB-11282")
+#List all files ending in "tbl" in the folder
+files <- list.files()[grep(".tbl",list.files())]
+directory="~/Git NEW/Study 3 NEW/E-MTAB-11282/bacon_2"
+library(tidyverse)
+
+#Run each file in bacon using a loop
+for (f in files)
+{
+  file <- read_tsv(f) #Read the file
+  f <- sub("\\.tbl", "", f) #Obtain the name of the dataset without the ".tbl" at the end
+  print(f) #show which dataset we are currently analysing
+  bc <- bacon(teststatistics = NULL, #run bacon on effect sizes and standard errors
+              effectsizes = file$EFFECTSIZE,
+              standarderrors = file$SE)
+  #bias and inflation=what it outputs  
+  tiff(paste0('QQ-plot_',f,'.tiff'), #save the graph of raw and adjusted effect sizes and standard errors
+       width =4,
+       height = 2.5,
+       units = 'in',
+       res=600)
+  print(plot(bc, type="qq")) #q-q plot shows the deviation of p-value distribution from null hypothesis. The observed P values for each CpG are sorted from largest to smallest and plotted against expected values from a theoretical ??2-distribution.
+  dev.off()
+  
+  print(c(inflation(bc), #show the inflation factor for this dataset
+          bias(bc))) #show the bias factor for this dataset
+  
+  file$EFFECTSIZE_CORR <- es(bc)[,1] #add a column to the file corresponding to the corrected effect size
+  file$SE_CORR <- se(bc)[,1] #add a column to the file corresponding to the corrected standard error
+  file$PVALUE_CORR <- pval(bc)[,1] #add a column to the file corresponding to the corrected p-value
+  write.table(file, #save the file
+              file=paste0(directory,"/",f,"_corrected.tbl"),
+              quote = FALSE,
+              row.names = FALSE,
+              col.names = TRUE,
+              sep="\t")
+}
+
+#redo all three of those + bacon but for beta values
+#FOR THE BETA VALUES FILE: METAL doesn't like small values and it will round them up to a point that is no longer exploitable, so before you run METAL (just after bacon), multiply the beta-values adjusted effect sizes and standard errors by 100
+B_corrected=read.delim("results_B_Gender_Timepoint_corrected.tbl")
+B_corrected$EFFECTSIZE_CORR100=B_corrected$EFFECTSIZE_CORR*100
+B_corrected$SE_CORR_100=B_corrected$SE_CORR*100
+
+#results forbaselineVO2:sex  sigma.0     mu.0 
+#6.933322 0.144173 BETA 
+#0.91918230 -0.04870548 M
+
+#results for sex:timepoint
+#sigma.0        mu.0 
+#0.93612312 -0.03677321  BETA
+# 0.96741799 -0.04534046 M
+
+##results for 11282
+#M gender:Time
+#0.98091864 -0.06944909 
+
+#M gender:baselineVO2
+#1.10568867 -0.09831427 
+
+#B gender:timepoint
+#0.969723733 0.001642098 
+
+#B Gender:baselineVo2
+#0.9131003 -0.4020206 
+
+
+
+
+write.table(B_corrected,
+            file="results_B_Gender_Timepoint_corrected_final.tbl",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+
+#now volcano
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+CpGs=META_M_sextime_inbothstudies$MarkerName
+M = mutate(META_M_sextime_inbothstudies, sig=ifelse(META_M_sextime_inbothstudies$FDR<0.005, "FDR<0.005", "Not Sig"))
+M = mutate(M, coef=ifelse(M$BetaEffectSize<0, "neg", "pos"))
+M = mutate(M, color=ifelse(M$FDR>0.005,"black",ifelse(M$FDR<0.005&M$coef=="neg","blue","red")))#for some reason worked this way and not when i did adjp> so above two lines are kind of extra but helped to make sure it was correct
+M=data.frame(CpGs,M)
+#ifelse- "if its met" "it will do this", volcano
+M$color<-as.factor(M$color)
+rownames(M)=M$MarkerName
+p=ggplot(M, aes(BetaEffectSize, -log10(P.value))) +
+  geom_point(aes(col=color),size=0.3)+
+  scale_color_manual(values=c("black","#1F78B4", "#E31A1C"))+
+  labs(x="% DNAm diff. associated w/training in sex-specific manner",y="-log10(p-value)")+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  theme(axis.text=element_text(size=10))+
+  xlim(-9, 9)
+  geom_text_repel(data=M[c("cg08013100")],
+                  aes(label=CpGs),
+                  size=2.5,
+                  box.padding = unit(1.5, "lines"),
+                  point.padding = unit(0, "lines"))
+
+
+tiff("Volcano plot sextime DNAm_0.005.tiff",
+     height=4.5,
+     width=5,
+     units="in",
+     res=600)
+p
+dev.off()
+
+#dotplot of baseline VO2 vs DNAm
+#library(data.table)
+GENESMART_B_t=t(Gene_SMART_B)
+cpgs_phenos_GENESMART=cbind(pheno_cons_all,GENESMART_B_t)
+rownames(cpgs_phenos_GENESMART)=colnames(Gene_SMART_B)
+cpgs_phenos_GENESMART_PREs=cpgs_phenos_GENESMART[rownames(cpgs_phenos_GENESMART) %like% "PRE", ]
+cpgs_phenos_GENESMART_PREs$sex=factor(cpgs_phenos_GENESMART_PREs$sex, levels=c("male","female"))
+
+###pre process the other dataset
+#run libraries
+library(readxl)
+library(tidyverse)
+library(ChAMP)
+
+#load the data and see that males and females do cluster seperately 
+#load the directory of my DNA samples, I have created this file manually in excel that has sample ID, position number, batch number, sex, age. Must be a CSV file
+#must filter XY chromosomes if have males and females- filterxy=TRUE
+#must filter out cpgs that are close to SNPs because they will be innacurate rep of me bcs its not binding the same there
+#first thing to do do my idat file to start preprocessing 
+#remember to increase memory limit before!!
+pddata=read_csv("pd_data_11282.csv")
+library(stringr)
+pddata$Sentrix_ID=gsub("_.*","",pddata$`Assay Name`)
+pddata$Sample_Name=gsub("_.*","",pddata$`Extract Name`)
+pddata$Sentrix_Position=str_sub(pddata$`Assay Name`,start=14,end=19)
+pddata=pddata %>% select (-c(`Extract Name`,`Assay Name`))
+library(dplyr) 
+pddata=pddata %>% filter(row_number() %% 2 == 0) ## Select even rows
+write.csv(pddata,file="pd_data_11282_edited.csv")
+
+my_load=champ.load(directory="~/Git NEW/Study 3 NEW/E-MTAB-11282/idats",
+                   filterXY=TRUE,
+                   arraytype = "EPIC",
+                   filterDetP=TRUE,
+                   filterNoCG = TRUE,
+                   population="EUR")
+
+#within my load, it gives two things, not just a matrix, gives beta and phenotype so can just load beta
+
+#filterDetP=always TRUE (need to filter out the probes that were of bad quality) when above 0.01 its a "failed probe"
+#must do filter XY in males/females to determine meth at sex chrom should look like two separate clusters of males and females (looks at 1000 most variable cpgs in the whole genome, many of them on the Y chromosome, that is the methylation being taken into consideration)
+#DetPcut= threshold for filterDetp (dont need to change from default of 0.01)
+#removeDetP=should I remove the sample that had bad probes? may remove whole individual, default is if over 10% of probes failed then remove sample)
+#filterNOCG=TRUE (default false, remove things that showed up that arent CpGs)
+#filterSNPs=TRUE (remove CpGs that are meQTLs) (if working on meQTLs run without this)
+#filterMultiHit=TURE (by default true, want to remove probes that were "unspecific", they binded to many places)
+
+#for stats purposes it turns 0.0001 methylation into 0 and .9998 into 1, due to bimodal distribution there will be many that are close to 0 or close to 1. but many cpgs will be highly effected by exercise and dietand will have a me of 0.2, 0.3)
+#remove cross-hybridizing probes
+setwd("~/Git NEW/Study 3 NEW")
+cross_hyb_probes=readxl::read_xlsx("Cross reactive and SNP probes from Pidsley et al.xlsx")
+BETA=data.frame(my_load$beta)
+BETA=BETA[!rownames(BETA) %in% cross_hyb_probes$ProbeID,]
+BETA=as.matrix(BETA)
+#Save the raw beta-value matrix that champ.load loaded for you in a txt file so you can load it faster next time
+write.table(my_load$beta,
+            file="Raw beta values.txt",
+            quote=FALSE,
+            row.names=TRUE,
+            col.names=TRUE,
+            sep='\t')
+
+#produce quality control graphs to look at the data (myload is a list with 3 elements: 1.beta 2. intensity (raw intensity dont care), 3.pheno data)
+champ.QC(beta=BETA,
+         pheno=my_load$pd$Sex)
+#this is before adjusting for batch, so males and females likely to be mixed together in dendrogram
+
+rawbeta=read.delim("Raw beta values.txt") #bcs my R closes, and all I need is beta not phenotypes
+
+#Normalization of Type I and Type II probes ##or beta=my_load
+myNorm <- champ.norm(beta=BETA,
+                     arraytype="EPIC")
+
+#pheno is what i want to color based off of
+
+library(MethylAid)
+library(minfi)
+targets<-read.metharray.sheet
+
+
+#Save the beta (RAW) file so you dont have to run everytime, it is being saved to whatever wd im in
+#make sure tpo add csv to name of file.
+#quote means save a file in R with save with "" in excel
+#row.names and colnames= TRUE so that R knows that if it has a name for the row or column then include in csv file
+#sep, how to sepearate the values by backslash tick means that it is seperate by tab.
+write.table(my_load$beta,
+            file = "Raw beta values.txt",
+            quote = FALSE,
+            row.names = TRUE,
+            col.names = TRUE,
+            sep = '\t')
+
+#Next step is to normalise due to technology having Type 1 and Type 2 probes and the chemistry behind each is slight different
+#So when you look at normal distribution may be slightly different. So essentially you normalise the type 1 and type 2 probs
+#there have been a few types of ways to analyze probes (chemistrywise), type I (older), type II, and then BMiQ makes it so that the two can be mixed statistically in the same analysis.
+#27K, 450K, EPIC*-- EPIC has both type I and type II probes
+myNorm= champ.norm(beta=BETA,
+                   arraytype = "EPIC") #Don't change any other defaults.
+write.table(myNorm,
+            file = "Normalised beta values.txt",
+            quote = FALSE,
+            row.names = TRUE,
+            col.names = TRUE,
+            sep = '\t')
+
+#produce quality control grpahs to look at the data after normalization, could change a little
+#but myload isnt hear anymore so build new phenotypes table, maybe this will work..did I think
+pd=read_excel("phenotypes_myload.xlsx")
+pd=read.csv("directory_preprocessing.csv") #trying this so SVD uses ID in PCA
+champ.QC(beta=myNorm,
+         resultsDir="./CHAMP_Normalization/",
+         pheno=pddata$Sex)
+
+#Single Value Decomposition (SVD)
+#add phenotypes of interest to identify main sources of variability in DNA methylation
+#Age, sex, batch, position, timepoint, fitness....
+#saves a pdf automatically somewhere
+#which beta matrix you want to use, just created a new normalized one
+#there was an error with this because it was seeing the slide (batch) as a numeric instead of a factor, SVD must hace factors, sample ID gets dropped bcs they are all unique
+pddata$Sentrix_ID=as.factor(pddata$Sentrix_ID) #to convert the slide (batch) into factors instead of numeric
+pddata$Sex=as.factor(pddata$Sex) #to convert the slide (batch) into factors instead of numeric
+pddata$Timepoint=as.factor(pddata$Timepoint) #to convert the slide (batch) into factors instead of numeric
+pddata$Disease=as.factor(pddata$Disease)
+champ.SVD(beta=myNorm,
+          pd=pddata,
+          resultsDir = "./CHAMP_SVDimages/")
+#usually batch and position are the biggest factors of PCA plot
+#which factors are associated with each principal component (PCA)
+#PCA= tries to find linear combo of methylation values at all CPGs so that samples on graph are spread as maximally as possible, method to show sample clustering, PCA1 explains maximum amount of variability, then will try to explain rest with 2, 3,etc
+#PCA representation/plot (cube) is a combo of SVD, SVD is the bars of colors of each PCA, plot (cube) is combing 3 top PCAs into a 3D
+
+#adjust for batch effects using the ComBat function using SVA package
+library(sva)
+library(minfi)
+
+#run combat to correct batch effects, first converting to M values bcs thats what the function uses
+myNorm<-read.delim("Normalized beta values.txt")
+M<-logit2(myNorm)
+
+batch=pddata$Sentrix_ID
+position=pddata$Sentrix_Position
+
+myCombad=ComBat(dat=as.matrix(M),  #it outputs an M value matrix that has been adjusted for batch
+                batch=batch,
+                mod=NULL)
+
+#now correct for position
+myCombat=ComBat(dat=as.matrix(myCombad),
+                batch=position,
+                mod=NULL)
+
+#dont need mod, which is model matrix
+
+myCombad_beta=ilogit2(myCombad) #batch correction
+myCombat_beta=ilogit2(myCombat) #position correction after batch correction
+
+#Run SVD again
+champ.SVD(beta=myCombad_beta,
+          pd=pddata,
+          resultsDir="./CHAMP_SVDimages/batch_corrected_2/")
+
+#run again after corrected for position
+champ.SVD(beta=myCombat_beta,
+          pd=pddata,
+          resultsDir="./CHAMP_SVDimages/batch_position_corrected_randomvar/")
+
+#Save
+write.table(myCombat_beta,
+            file="E_MTAB_11282_betavaluescorrected.txt",
+            quote=FALSE,
+            row.names=TRUE,
+            col.names=TRUE,
+            sep='\t')
+
+#Check samples based on the methylAid package
+library(MethylAid)
+library(minfi)
+targets <- read.metharray.sheet("~/Git NEW/Study 3 NEW/E-MTAB-11282/idats")
+data=summarize(targets)
+visualize(data)#the shiny app closes immediately and says object of type closure not subsettable
+
+
+#Do some more checks with heatmaps, PCA, etc. ##didnt perform these as packages withnon-zero exit status, comeback to this to make sure all is ok, but other qc checks were fine
+library(superheat)
+library(FactoMineR)
+dat=scale(myCombat_beta[,]) #Transform each variable to a z-score
+dat_t=t(dat)
+res.pca <- PCA(dat_t, graph = FALSE)
+
+##analyze the data for meta-analysis
+setwd("~/Git NEW/Study 3 NEW/E-MTAB-11282")
+phenos_11282=readxl::read_xlsx("Exercise training phenotypes - 5.5.2022.xlsx")
+phenos_11282$longID=paste0(phenos_11282$Timepoint,"_",phenos_11282$ID)
+phenos_11282$Gender=factor(phenos_11282$Gender)
+phenos_11282$`Lean or Obese`=factor(phenos_11282$`Lean or Obese`)
+phenos_11282$Timepoint=factor(phenos_11282$Timepoint,levels=c("PRE","POST"))
+baselineVO2=phenos_11282[phenos_11282$Timepoint=="PRE",c("longID","VO2 max:FFM")]
+baselineVO2=baselineVO2 %>% dplyr::slice(rep(1:n(), each = 2))
+phenos_11282$baselineVO2=baselineVO2$`VO2 max:FFM`
+
+
+Beta_11282=read.delim("E_MTAB_11282_betavaluescorrected.txt")
+M_11282<-logit2(Beta_11282)
+columnnames=colnames(M_11282)
+columnnames=str_sub(columnnames,start=2,end=3)
+columnnames=gsub("\\.[0-9]*$","",columnnames)
+columnnames=data.frame(columnnames)
+columnnames$Timepoint=c("POST","PRE")
+columnnames$longID=paste0(columnnames$Timepoint,"_",columnnames$columnnames)
+colnames(M_11282)=columnnames$longID
+colnames(Beta_11282)=columnnames$longID
+M_11282=setcolorder(M_11282,phenos_11282$longID) #put columns in order as another vector
+Beta_11282=ilogit2(M_11282)
+write.table(M_11282,
+            file="M_11282_final.txt",
+            quote=FALSE,
+            row.names=TRUE,
+            col.names=TRUE,
+            sep='\t')
+
+design <- model.matrix(~Timepoint+Age+`Lean or Obese`+Gender*baselineVO2,
+                       phenos_11282)
+
+#can run corfit on subset of 20,000 cpgs to save time
+Msubset <- M_11282[sample(nrow(M_11282),size=20000,replace=FALSE),]
+corfit_subset_M <- duplicateCorrelation(Msubset, #we fit limma models on M values and not beta values
+                                          design,
+                                          block=phenos_11282$ID)
+Bsubset <- Beta_11282[sample(nrow(Beta_11282),size=20000,replace=FALSE),]
+corfit_subset_B <- duplicateCorrelation(Bsubset, #we fit limma models on M values and not beta values
+                                        design,
+                                        block=phenos_11282$ID)
+
+#M ~Gender*Timepoint+Age+`Lean or Obese`+baselineVO2 = 0.1761358
+#Beta ~Gender*Timepoint+Age+`Lean or Obese`+baselineVO2 = 0.1255617
+#M ~Timepoint+Age+`Lean or Obese`+Gender*baselineVO2 =0.1447423
+#B ~Timepoint+Age+`Lean or Obese`+Gender*baselineVO2 =0.1124178
+
+fit = limma::lmFit(M_11282,
+                   design,
+                   block=phenos_11282$ID,
+                   correlation= 0.1124178) 
+
+fit2 <- eBayes(fit)
+results_genderbaselineVO2_M=topTable(fit2,
+                           coef = "GenderMale:baselineVO2",
+                           number = nrow(M_11282),
+                           p.value = 1)
+
+
+g=ggplot(META_M_sexbaselineVO2,aes(P.value))+
+  geom_histogram(bins=20,col=I("black"))+
+  theme_minimal()+
+  xlab("Raw P values")+
+  ggtitle("Sex:Training")
+
+tiff("histogram raw p vals sexbaselineVO2_DNAmMETA.tiff",
+     height = 3,
+     width = 5,
+     units = "in",
+     res = 600)
+g
+dev.off()
+
+#mitch, code from Macsue with extrameta results, made the list of genes from extrameta from sarahs code (see that script)
+#LOAD TRANSCRIPTOME (AMAR ET AL)
+setwd("~/Git NEW/Study 3 NEW")
+Extrameta=read.delim("Extrameta sex-specific genes.txt")
+Extrameta$FDR=p.adjust(Extrameta$p,method="BY") # they use benjamini yekutieli method and 0.1
+Significant_Extrameta=Extrameta[Extrameta$FDR<0.1,]
+Significant_mRNA=unique(Significant_Extrameta$gene)#286 genes,they get 247...  not sure the descrency
+Extrameta=Extrameta%>%
+  mutate(t=ES/SE)
+
+#LOAD DNAM (META ANALYSIS: GENE SMART + E-MTAB11282)
+#loaded just above, add tstat from M values *double check if used to use M values for t stats or from beta
+#add anno to gene names
+#load results from meta analysis (METAL)
+setwd("~/Git NEW/Study 3 NEW")
+META_M_sextime=read.delim("METAANALYSIS_M_sex_time.TBL")
+META_B_sextime=read.delim("METAANALYSIS_B_sex_time.TBL")
+
+META_M_sextime$t_stat=META_M_sextime$Effect/META_M_sextime$StdErr
+META_M_sextime$BetaEffectSize=META_B_sextime$Effect
+META_M_sextime$FDR=p.adjust(META_M_sextime$P.value, method = "fdr", n = length(META_M_sextime$P.value))
+
+META_M_sextime_inbothstudies=META_M_sextime[META_M_sextime$HetDf>=1,]
+
+META_M_sexbaselineVO2=read.delim("METAANALYSIS_M_sex_baselineVO2.TBL")
+META_B_sexbaselineVO2=read.delim("METAANALYSIS_B_sex_baselineVO2.TBL")
+
+META_M_sexbaselineVO2$t_stat=META_M_sexbaselineVO2$Effect/META_M_sexbaselineVO2$StdErr
+META_M_sexbaselineVO2$BetaEffectSize=META_B_sexbaselineVO2$Effect
+META_M_sexbaselineVO2$FDR=p.adjust(META_M_sexbaselineVO2$P.value, method = "fdr", n = length(META_M_sexbaselineVO2$P.value))
+
+META_M_sexbaselineVO2_inbothstudies=META_M_sexbaselineVO2[META_M_sexbaselineVO2$HetDf>=1,]
+
+annotation=read.delim('Annotation_2020.txt',header=TRUE)
+rownames(annotation)=annotation$probeID
+#annotation$MarkerName=annotation$probeID
+#META_M_sextime=left_join(META_M_sextime,annotation, by="MarkerName")
+#META_M_sexbaselineVO2=left_join(META_M_sexbaselineVO2,annotation, by="MarkerName")
+
+#LOAD PROTEOMICS (GENE SMART)
+setwd("~/Git NEW/Study 3 NEW")
+results_sextime_baselineVO2_age_proteomics=openxlsx::read.xlsx("results_sextime_baselineVO2_age_proteomics.xlsx",rowNames=TRUE)
+results_sexbaselineVO2_age_time_proteomics=openxlsx::read.xlsx("results_sexbaselineVO2_age_time_proteomics.xlsx",rowNames=TRUE)
+
+# mitch
+library("mitch")
+library(tidyverse)
+proteome <- results_sexbaselineVO2_age_time_proteomics
+proteome$gene <- rownames(proteome)
+head(proteome)
+str(proteome)
+transcriptome <- Extrameta
+colnames(transcriptome)[6] <- "gene"
+head(transcriptome)
+str(transcriptome)
+#add genes to methylation results
+META_M_sexbaselineVO2_inbothstudies=META_M_sexbaselineVO2_inbothstudies%>%
+  mutate(t=t_stat)%>%
+  mutate(genes= annotation[META_M_sexbaselineVO2_inbothstudies$MarkerName, "genesUniq"])
+methylation <- META_M_sexbaselineVO2_inbothstudies
+dim(methylation)
+methg <- methylation$genes
+methg_spl <- strsplit(methg,";")
+methylation <- methylation[which(lapply(methg_spl,length)>0),]
+head(methylation)
+dim(methylation)
+x <- apply(methylation,1,function(x) {
+  GENES <- as.character(x[length(x)])
+  GENES <- unlist(strsplit(GENES,";"))
+  z <- lapply(GENES,function(G) {
+    y <- x[1:(length(x)-1)]
+    y$Gene <- G
+    y
+  })
+  do.call(rbind,z)
+})
+meth_fix <- do.call(rbind,x)
+meth_fix2 <- as.data.frame(apply(meth_fix[,c("Gene","t","MarkerName")],2,as.numeric))
+meth_fix2$gene <- unlist(meth_fix[,"Gene"])
+head(meth_fix2)
+dim(meth_fix2)
+#Now import with mitch
+proteome <- proteome[,c("gene","t")]
+dim(proteome)
+transcriptome <- transcriptome[,c("gene","t")]
+dim(transcriptome)
+methylation <- meth_fix2[,c("gene","t")]
+methylation <- aggregate(. ~ gene, methylation, sum)
+dim(methylation)
+#l <- list("methylation"=methylation, "rna"=transcriptome, "proteome"=proteome)
+####without rna
+l <- list("methylation"=methylation, "proteome"=proteome)
+##########
+m <- mitch_import(x = l,geneIDcol = "gene",DEtype = "limma")
+#Fetch gene sets
+download.file("https://reactome.org/download/current/ReactomePathways.gmt.zip", destfile="ReactomePathways.gmt.zip")
+unzip("ReactomePathways.gmt.zip")
+genesets <- gmt_import("ReactomePathways.gmt")
+#Calculate enrichment priority as significance
+res <- mitch_calc(x=m,genesets = genesets ,priority = "significance",minsetsize = 5, resrows = 31) #change resrows to change number of gene sets, there are 8 sig so choosing them only for sextime no rNA, 31 sig for sexCRF no RNA
+head(res$enrichment_result,50)
+setwd("~/Git NEW/Study 3 NEW/mitch")
+mitch_report(res = res, outfile = "myreport_significance_sexCRF_noRNA.html")
+mitch_plots(res,outfile="mycharts_significance_sexCRF_noRNA.pdf")
+#save results as table
+res=res$enrichment_result
+res_sig=res[res$p.adjustMANOVA<0.25 ,]
+write.csv(res, "mitch_sextime.csv")
+
+
+#Venn diagram of DNAm, proteome, and RNA (for RNA use Amar for both ATM, but ideally would have RNA from Chapman)
+library(VennDiagram)
+
+#sexbaselineVO2
+#load DNAm (go load methylation in line above, choose which model of interest)
+DNAM=META_M_sexbaselineVO2_inbothstudies[META_M_sexbaselineVO2_inbothstudies$FDR<0.005,]
+DNAM=unique(unlist(strsplit(as.character(DNAM$genes),split=";"))) #there were repeats because after ; there was a space..so remove white space
+DNAM=na.omit(DNAM)
+#check if all removed
+sum(is.na(DNAM))#365
+
+#RNA Amar et al
+RNA=Extrameta[Extrameta$FDR<0.05,"gene"] #208
+
+#proteome
+results_sexbaselineVO2_age_time_proteomics$gene=rownames(results_sexbaselineVO2_age_time_proteomics)
+results_sexbaselineVO2_age_time_proteomics$pi_unad=abs(results_sexbaselineVO2_age_time_proteomics$logFC)*(-log10(results_sexbaselineVO2_age_time_proteomics$adj.P.Val))
+results_sexbaselineVO2_age_time_proteomics$PI=10^-results_sexbaselineVO2_age_time_proteomics$pi_unad
+Protein=results_sexbaselineVO2_age_time_proteomics[results_sexbaselineVO2_age_time_proteomics$PI<0.05,"gene"]#284 proteins
+
+#sextime
+#load DNAm (go load methylation in line above, choose which model of interest)
+DNAM=META_M_sextime_inbothstudies[META_M_sextime_inbothstudies$FDR<0.005,]
+DNAM=unique(unlist(strsplit(as.character(DNAM$genes),split=";"))) #there were repeats because after ; there was a space..so remove white space
+DNAM=na.omit(DNAM)
+#check if all removed
+sum(is.na(DNAM))
+
+#RNA Amar et al
+RNA=Extrameta[Extrameta$FDR<0.05,"gene"] #208
+
+#proteome
+results_sextime_baselineVO2_age_proteomics$gene=rownames(results_sextime_baselineVO2_age_proteomics)
+results_sextime_baselineVO2_age_proteomics$pi_unad=abs(results_sextime_baselineVO2_age_proteomics$logFC)*(-log10(results_sextime_baselineVO2_age_proteomics$adj.P.Val))
+results_sextime_baselineVO2_age_proteomics$PI=10^-results_sextime_baselineVO2_age_proteomics$pi_unad
+Protein=results_sextime_baselineVO2_age_proteomics[results_sextime_baselineVO2_age_proteomics$PI<0.05,"gene"]#284 proteins
+
+venn.diagram(
+  x = list(DNAM, RNA,Protein),
+  category.names = c("DNA methylation",
+                     "RNA",
+                     "Protein"),
+  filename = "VennD sexbaselineVO2_Amar_0.005.tiff",
+  output=TRUE,
+  col=c("#440154ff", '#21908dff','#fde725ff'),
+  cex=2,
+  lwd=1.2,
+  fill = c("#440154ff", '#21908dff','#fde725ff'),
+  cat.cex = 1.5,
+  cat.default.pos = "outer",
+  cat.pos = c(-10, 10,180),
+  cat.dist = c(0.05, 0.05,0.05),
+  scaled=FALSE,
+  resolution=600
+)
+
+#load meta analysis sextime results
+#combine beta and M
+
+#now volcano
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+CpGs=META_M_sextime_inbothstudies$MarkerName
+M = mutate(META_M_sextime_inbothstudies, sig=ifelse(META_M_sextime_inbothstudies$FDR<0.005, "FDR<0.005", "Not Sig"))
+M = mutate(M, coef=ifelse(M$BetaEffectSize<0, "neg", "pos"))
+M = mutate(M, color=ifelse(M$FDR>0.005,"black",ifelse(M$FDR<0.005&M$coef=="neg","blue","red")))#for some reason worked this way and not when i did adjp> so above two lines are kind of extra but helped to make sure it was correct
+M=data.frame(CpGs,M)
+#ifelse- "if its met" "it will do this", volcano
+M$color<-as.factor(M$color)
+p=ggplot(M, aes(BetaEffectSize, -log10(FDR))) +
+  geom_point(aes(col=color),size=0.3)+
+  scale_color_manual(values=c("black","#1F78B4", "#E31A1C"))+
+  labs(x="% DNAm diff. btwn males compared to females following HIIT",y="-log10(p-value)")+
+  theme_minimal()+
+  theme(legend.position = "none")+
+  theme(axis.text=element_text(size=10))+
+  xlim(-15, 15)
+geom_text_repel(data=M[c("cg08013100")],
+                aes(label=CpGs),
+                size=2.5,
+                box.padding = unit(1.5, "lines"),
+                point.padding = unit(0, "lines"))
+
+
+tiff("Volcano plot training_sex DNAm_0.005.tiff",
+     height=4.5,
+     width=5,
+     units="in",
+     res=600)
+p
+dev.off()
+
+#unique genes
+anno=read.delim("Annotation_2020.txt")
+META_M_sextime_inbothstudies$probeID=META_M_sextime_inbothstudies$MarkerName
+META_M_sextime_inbothstudies_anno=left_join(META_M_sextime_inbothstudies,anno,by="probeID")
+sig=META_M_sextime_inbothstudies_anno[META_M_sextime_inbothstudies_anno$FDR<0.05,]
+genes=unique(unlist(strsplit(as.character(sig$genesUniq),split=";")), collapse = ";")
+length(genes)
+na.omit(genes)
+
+anno=read.delim("Annotation_2020.txt")
+META_M_sexbaselineVO2_inbothstudies$probeID=META_M_sexbaselineVO2_inbothstudies$MarkerName
+M_anno=left_join(META_M_sexbaselineVO2_inbothstudies,anno,by="probeID")
+sig=M_anno[M_anno$FDR<0.05,]
+genes=unique(unlist(strsplit(as.character(sig$genesUniq),split=";")), collapse = ";")
+length(genes)
+na.omit(genes)
+
+#quick enrichment on CpGs
+gometh<-gometh(
+  sig.cpg=sig$CPG,#make sure getting original one and not one that added better annotation and converted to tbl
+  all.cpg = META_M_sextime_inbothstudies_anno$CPG,
+  collection = "KEGG",
+  array.type = "EPIC",
+  plot.bias = TRUE,
+  prior.prob = TRUE,
+  anno = NULL,
+  equiv.cpg = TRUE,
+  fract.counts = TRUE,
+  sig.genes=TRUE
+)
+
+#use Reactome with missmethyl
+library(AnnotationDbi)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+library(stringr)
+library(org.Hs.eg.db)
+library(dplyr)
+library(reactome.db)
+#wait fixed getannot!!
+tempAnnot=getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+#library(methylGSA)
+#tempAnnot= methylGSA:::getAnnot("EPIC")
+
+temp = unique(tempAnnot$UCSC_RefGene_Name)
+minsize=100
+maxsize=500
+gene.entrez = suppressMessages(
+  AnnotationDbi::select(org.Hs.eg.db, temp, columns = "ENTREZID",
+                        keytype = "SYMBOL")$ENTREZID)
+reactome.df = suppressMessages(
+  AnnotationDbi::select(reactome.db, gene.entrez, columns = "REACTOMEID",
+                        keytype = "ENTREZID"))#LOAD LIBRARY reactome.db!!!!!!!!!!
+reactome.df = na.omit(reactome.df)
+reactom2entrez = reactome.df$ENTREZID
+names(reactom2entrez) = reactome.df$REACTOMEID
+reactome.list = split(reactom2entrez, names(reactom2entrez))
+reactome.list.sizes = vapply(reactome.list, length, FUN.VALUE = 1)
+reactome.list.sub =
+  reactome.list[
+    reactome.list.sizes>=minsize & reactome.list.sizes<=maxsize]
+gsaREACTOME=gsameth(sig.cpg=sig$CPG,
+                              all.cpg = META_M_sextime_inbothstudies_anno$CPG,
+                              collection = reactome.list.sub,
+                              array.type = "EPIC",
+                              plot.bias = TRUE,
+                              prior.prob = TRUE,
+                              anno = NULL,
+                              equiv.cpg = TRUE,
+                              fract.counts = TRUE,
+                              sig.genes = TRUE
+) 
+
+#add reactome desciprtion to pathway (from methylGSA github, nice one!)
+#methylGSEA is outdated, using source function
+getDescription <- function(GSids, GS.type){
+  if(GS.type=="GO"){
+    goterms = unlist(Term(GOTERM))
+    temp = as.character(goterms[GSids])
+    return(temp)
+  }
+  if(GS.type=="KEGG"){
+    KEGGID2NAME = 
+      download_KEGG("hsa", keggType="KEGG", 
+                    keyType="kegg")$KEGGPATHID2NAME
+    rownames(KEGGID2NAME) = KEGGID2NAME$from
+    temp = as.character(KEGGID2NAME[paste0("hsa",GSids), "to"])
+    return(temp)
+  }
+  if(GS.type=="Reactome"){
+    Reactome2NAME = unlist(as.list(reactomePATHID2NAME))
+    temp = as.character(Reactome2NAME[GSids])
+    return(temp)
+  }
+  
+}
+Description = getDescription(rownames(gsaREACTOME), "Reactome")
+gsaREACTOME= cbind(Description, gsaREACTOME)
+
+##linear model for emtab phenotypic stats
+aov1 <- aov(`VO2 max` ~ Age+Gender*Timepoint+`Lean or Obese`, data=phenos_11282)
+boxplot(`VO2 max` ~ Age+Gender*Timepoint+`Lean or Obese`, data=phenos_11282)
+m1=lm(`VO2 max` ~ Age+Gender*Timepoint+`Lean or Obese`, data=phenos_11282)
+summary(m1)
+
+#males and females separately
+males=phenos_11282[phenos_11282$Gender=="Male",]
+females=phenos_11282[phenos_11282$Gender=="Female",]
+
+m1=lm(`VO2 max` ~ Age+Timepoint+`Lean or Obese`, data=females)
+summary(m1)
+
+PREs=data.frame(phenos_11282[phenos_11282$Timepoint=="PRE","VO2 max"])
+PREs=PREs$VO2.max
+mean(PREs)
+
+POSTs=data.frame(phenos_11282[phenos_11282$Timepoint=="POST","VO2 max"])
+POSTs=POSTs$VO2.max
+mean(POSTs)
+
+malepre=data.frame(males[males$Timepoint=="PRE","VO2 max"])
+PREs=malepre$VO2.max
+mean(PREs)
+
+malepost=data.frame(males[males$Timepoint=="POST","VO2 max"])
+POSTs=malepost$VO2.max
+mean(POSTs)
+
+femalepre=data.frame(females[females$Timepoint=="PRE","VO2 max"])
+PREs=femalepre$VO2.max
+mean(PREs)
+
+femalepost=data.frame(females[females$Timepoint=="POST","VO2 max"])
+POSTs=femalepost$VO2.max
+mean(POSTs)
+
+##to determine whether fit males/females are more/less similar to unfit males/females, in other words, if sex diff exist at baseline, exercise induces changes that are not sex specific, are the sex diff convering or diverging with exercise?
+#select for sex-DMPs
+setwd("~/Git NEW/Study 3 NEW")
+sexDMPs=read_excel("Supplementary table DMPs.xlsx")
+
+#To check whether exercise shifts the sex-biased methylome to converge between the sexes
+#check this in a few ways:
+#1. run PCA on sex DMPs, label as before and after training (then do for CRF), then, extract coordinates of DIM1 and plot them vs PRE/4WP (then do for CRF)
+#2. make a 2D plot of effect sizes for sex*training (then sex*CRF) of sex-DMPs (just adjust p values after extracted those from results table)
+#make heat map (sex, sex*training, training)
+#3. check inflation of pvalues of sex DMPs for sex*training (and then sex*CRF)
+#4. make corr plot of all of these together
+
+#load gene smart B values and baconed results
+setwd("~/Git NEW/Study 3 NEW/completed bacons")
+results_sextime_genesmart_B=("results_B_sex_Timepoint_corrected_final.tbl")
+results_sextime_genesmart_M=("results_M_sex_Timepoint_corrected.tbl")
+
+
+library(superheat)
+library(FactoMineR)
+library(factoextra)
+#graph
+DMPs_beta=Gene_SMART_B[rownames(Gene_SMART_B) %in% sexDMPs$MarkerName,] 
+dat=scale(DMPs_beta[,]) #Transform each variable to a z-score
+dat_t=t(dat)
+res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+
+Sex=pheno_imp_VO2_final$sex
+Timepoint=pheno_imp_VO2_final$Timepoint
+
+PCAplot=fviz_pca_ind(res.pca, geom.ind = "none",title="GeneSMART sex-DMPs")+
+  geom_point(aes(shape=Timepoint,color=Sex))+
+  scale_color_manual(values=c("#FC8D62","#66C2A5"))
+
+
+tiff("PCA plot sex DMPs genesmart.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+PCAplot
+dev.off()
+#extract first dim and pearson corr,extract results for individuals
+ind <- get_pca_ind(res.pca)
+ind
+# Coordinates of individuals
+head(ind$coord)
+PCs = res.pca$ind$coord[,1] #extract coordinated of each indic for first dimension
+
+#check if normally distributed
+library(ggpubr)
+library(stringr)
+pheno_imp_VO2_final$Timepoint=factor(pheno_imp_VO2_final$Timepoint, levels=c("PRE","4WP"))
+pheno_imp_VO2_final$DIM1=PCs
+#visualize
+pheno_imp_VO2_final$Timepointnumber=pheno_imp_VO2_final$Timepoint
+pheno_imp_VO2_final=pheno_imp_VO2_final %>%
+  mutate(across('Timepointnumber', str_replace, 'PRE', "1")) %>%
+mutate(across('Timepointnumber', str_replace, '4WP', "2")) %>%
+  mutate_at(c('Timepointnumber'), as.numeric)
+
+
+scatter=ggplot(data=pheno_imp_VO2_final, aes(x=Timepointnumber, y=DIM1)) +
+  geom_point(aes(colour=sex)) +
+  geom_smooth(method = "lm", na.rm = TRUE, fullrange= TRUE)+
+  labs(x="Timepoint", y="Dimension 1")+
+  theme_minimal()+
+  stat_cor(method = "pearson")+
+  scale_x_continuous(breaks=c(1,2),labels=c("PRE", "4WP"))
+
+
+
+tiff("scatter sex DMPs genesmart timepoint DIM1.tiff",
+     height = 4,
+     width = 3.5,
+     units = "in",
+     res = 600)
+scatter
+dev.off()
+
+
+
+#same but with VO2max at baseline
+scatter=ggplot(data=pheno_imp_VO2_final, aes(x=baselineVO2, y=DIM1)) +
+  geom_point(aes(colour=sex)) +
+  geom_smooth(method = "lm", na.rm = TRUE, fullrange= TRUE)+
+  labs(x="CRF (baseline VO2max)", y="Dimension 1")+
+  theme_minimal()+
+  stat_cor(method = "pearson")
+
+
+tiff("scatter sex DMPs genesmart CRF DIM1_colored.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+scatter
+dev.off()
+
+#2D plots of ES of sex-DMPs sex vs sex*tranining and sex vs sex*CRF
+ES_sex=sexDMPs %>% select(MarkerName,BetaEffectSize,FDR,geneNames)
+ES_sextraining=META_M_sextime_inbothstudies[META_M_sextime_inbothstudies$MarkerName %in% sexDMPs$MarkerName,]
+ES_sextraining=ES_sextraining %>% select(MarkerName,BetaEffectSize,FDR)
+ES_sexCRF=META_M_sexbaselineVO2_inbothstudies[META_M_sexbaselineVO2_inbothstudies$MarkerName %in% sexDMPs$MarkerName,]
+ES_sexCRF=ES_sexCRF %>% select(MarkerName,BetaEffectSize,FDR)
+
+ES_together_sextraining=inner_join(ES_sex,ES_sextraining,by="MarkerName")
+ES_together_sexCRF=inner_join(ES_sex,ES_sexCRF,by="MarkerName")
+
+gg=ggplot(ES_together_sexCRF, aes(BetaEffectSize.x, BetaEffectSize.y),color="black") +
+  geom_point(size=0.1)+
+  labs(x="% DNAm difference btwn males compared
+       w/females",y="% DNAm associated with sex*CRF")+
+  theme_minimal()+
+  geom_vline(xintercept = 0) + geom_hline(yintercept = 0)+
+  theme(legend.title = element_text(size = 8),
+        legend.text = element_text(size = 8))+
+  geom_smooth(method = "lm", na.rm = TRUE, fullrange= TRUE)
+
+gg=ggplot(ES_together_sextraining, aes(BetaEffectSize.x, BetaEffectSize.y),color="black") +
+  geom_point(size=0.1)+
+  labs(x="% DNAm difference btwn males compared
+       w/females",y="% DNAm associated with sex*training")+
+  theme_minimal()+
+  geom_vline(xintercept = 0) + geom_hline(yintercept = 0)+
+  theme(legend.title = element_text(size = 8),
+        legend.text = element_text(size = 8))+
+  geom_smooth(method = "lm", na.rm = TRUE, fullrange= TRUE)
+
+
+tiff("2D plot of eff sizes sex vs sextraining for sexDMPs.tiff",
+     height = 3.5,
+     width = 5,
+     units = "in",
+     res = 600)
+gg
+dev.off()
+
+#now heat map combine sex ES, sexCRF ES, and sextraining ES, AT SEX DMPS
+ES_combined=list(ES_sex,ES_sexCRF,ES_sextraining) %>% reduce(inner_join, by='MarkerName')
+colnames(ES_combined)[2]=c("Sex")
+colnames(ES_combined)[3]=c("FDR sex")
+colnames(ES_combined)[5]=c("Sex*CRF")
+colnames(ES_combined)[6]=c("FDR sexCRF")
+colnames(ES_combined)[7]=c("Sex*training")
+colnames(ES_combined)[8]=c("FDR sextraining")
+
+#heatmap
+ES_only=ES_combined %>% select ("Sex","Sex*CRF","Sex*training")
+#ES_only=as.matrix(ES_only)
+#png("superheat.png", height = 900, width = 800)
+#heatmap(ES_only, scale = c("none"))
+#dev.off()
+
+#Heatmap to contrast effect sizes
+dat_heat <- ES_only %>%
+  scale(center=FALSE)%>%
+  as_tibble()
+
+myBreaks <- c(seq(min(dat_heat,na.rm=T), 0, length.out=ceiling(100/2) + 1),
+              seq(max(dat_heat,na.rm=T)/100, max(dat_heat,na.rm=T), length.out=floor(100/2)))
+
+tiff("Heatmap DNAm.tiff",
+     width =50,
+     height = 100,
+     units = 'mm',
+     res=300)
+pheatmap(dat_heat,
+         color = colorRampPalette(rev(brewer.pal(n = 7, name =
+                                                   "RdBu")))(100),
+         #cutree_rows = 2,
+         cluster_rows = F,
+         cutree_cols = 2,
+         breaks = myBreaks,
+         cluster_cols = TRUE,
+         show_rownames = FALSE)
+dev.off()
+
+#histo of pvalues for sex DMPs in sex*training and sex*CRF
+ES_sextraining=META_M_sextime_inbothstudies[META_M_sextime_inbothstudies$MarkerName %in% sexDMPs$MarkerName,]
+ES_sexCRF=META_M_sexbaselineVO2_inbothstudies[META_M_sexbaselineVO2_inbothstudies$MarkerName %in% sexDMPs$MarkerName,]
+
+ES_sextraining$newFDR=p.adjust(ES_sextraining$P.value, method = "fdr", n = length(ES_sextraining$P.value))
+ES_sexCRF$newFDR=p.adjust(ES_sexCRF$P.value, method = "fdr", n = length(ES_sexCRF$P.value))
+#histogram p vals
+g=ggplot(ES_sextraining,aes(P.value))+
+  geom_histogram(bins=20,col=I("black"))+
+  theme_minimal()+
+  xlab("Raw P values")
+
+g=ggplot(ES_sexCRF,aes(newFDR))+
+  geom_histogram(bins=20,col=I("black"))+
+  theme_minimal()+
+  xlab("FDR sex DMPs")
+tiff("histogram FDR sexCRF for sexDMPs.tiff",
+     height = 3,
+     width = 5,
+     units = "in",
+     res = 600)
+g
+dev.off()
+
+#PCA for gene smart on sex DMPs, colored by VO2max, shape by sex
+B_sexDMPs=Gene_SMART_B[rownames(Gene_SMART_B) %in% sexDMPs$MarkerName,] 
+PREs=dplyr::select(B_sexDMPs,contains("PRE"))#when doing CRF
+dat_t=t(PREs)
+res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+Sex=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE","sex"]
+CRF=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE","baselineVO2"]
+PCAplot=fviz_pca_ind(res.pca, geom.ind = "point",pointsize = .05)+
+  # geom_line(aes(group=ID), colour="black", linetype="11")+
+  geom_point(aes(shape=Sex,color=CRF))+
+  scale_color_gradient(low = "yellow", high = "blue")
+scale_color_manual(values=c("#FC8D62","#66C2A5"))
+
+tiff("PCA GenesmartB by CRF.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+PCAplot
+dev.off()
+
+#PCA for gene smart on sex DMPs, colored by PRE POST, shape by sex
+B_sexDMPs=Gene_SMART_B[rownames(Gene_SMART_B) %in% sexDMPs$MarkerName,] 
+dat_t=t(B_sexDMPs)
+res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+Timepoint=pheno_imp_VO2_final[,"Timepoint"]
+Sex=pheno_imp_VO2_final[,"sex"]
+PCAplot=fviz_pca_ind(res.pca, geom.ind = "point",pointsize = .05)+
+  geom_point(aes(shape=Sex,color=Timepoint))+
+scale_color_manual(values=c("#ffff67","#BEBADA"))
+
+
+tiff("PCA GenesmartB by Timepoint.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+PCAplot
+dev.off()
+
+#plot one cpg that has the greatest contrast between effect of sex and effect of sex and training, for visual
+ES_only_contrast=ES_only=ES_combined %>% select ("Sex","Sex*CRF","Sex*training","MarkerName")
+ES_only_contrast$contrast=ES_only_contrast$Sex-ES_only_contrast$`Sex*training`
+ES_only_contrast$contrast2=ES_only_contrast$Sex-ES_only_contrast$`Sex*CRF`
+
+library(data.table)
+GENESMART_B_t=t(Gene_SMART_B)
+cpgs_phenos_GENESMART=cbind(pheno_imp_VO2_final,GENESMART_B_t)
+rownames(cpgs_phenos_GENESMART)=colnames(Gene_SMART_B)
+cpgs_phenos_GENESMART$sex=factor(cpgs_phenos_GENESMART$sex,levels=c("male","female"))
+#cpgs_phenos_GENESMART_PREs=cpgs_phenos_GENESMART[rownames(cpgs_phenos_GENESMART) %like% "PRE", ]
+#cpgs_phenos_GENESMART_PREs$sex=factor(cpgs_phenos_GENESMART_PREs$sex, levels=c("male","female"))
+
+#cpgs_phenos_GENESMART_PREs4WP=cpgs_phenos_GENESMART[!rownames(cpgs_phenos_GENESMART) %like% "CON", ]
+#cpgs_phenos_GENESMART_PREs4WP$sex=factor(cpgs_phenos_GENESMART_PREs4WP$sex, levels=c("male","female"))
+#cpgs_phenos_GENESMART_PREs4WP$Timepoint=factor(cpgs_phenos_GENESMART_PREs4WP$Timepoint, levels=c("PRE","4WP"))
+
+#one Cpg at baseline
+b=ggboxplot(data=cpgs_phenos_GENESMART, x='sex', y='cg01584394',
+            xlab="", ylab='DNAm at cg01584394',
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  ggtitle("")+
+  #rremove("x.text")+
+  rremove("x.ticks")+
+  scale_fill_brewer(palette = "Set2")
+b=ggboxplot(data=cpgs_phenos_GENESMART, x='Timepoint', y='cg01584394',
+            xlab="Timepoint", ylab='DNAm at cg01584394',
+            facet.by = "sex",
+            panel.labs =list(sex = c("Males", "Females")),
+            fill="sex",
+            panel.labs.font = list(size = 12))+
+  theme(axis.text.x = element_text(size=12),
+        axis.text.y = element_text(size=12))+
+  font("xy", size=12)+
+  rremove("legend")+
+  scale_fill_brewer(palette = "Set2") 
+tiff("DNAm Gene SMART cg01584394 by sex and timepoint.tiff",
+     height = 3,
+     width = 3.5,
+     units = "in",
+     res = 600)
+b
+dev.off() 
+
+#extract residuals from model with covariate I dont care about, to sex if baseline VO2 or timepoint shift the sex-biased methylome
+#effect of VO2 ~Age_PRE+batch+sex+Timepoint
+#effect of training ~Age_PRE+batch+sex+baselineVO2
+pheno_imp_VO2_final$sex=factor(pheno_imp_VO2_final$sex)
+pheno_imp_VO2_final$batch=factor(pheno_imp_VO2_final$batch)
+
+design <- model.matrix(~Age_PRE+batch+sex+Timepoint,
+                       pheno_imp_VO2_final)
+
+corfit2 <- duplicateCorrelation(Gene_SMART_B,
+                               design,
+                               block = pheno_imp_VO2_final$ID) 
+
+
+#Beta corfit consensus VO2 (without VO2)=0.2526745
+#Beta corfit consensus training (without timepoint)=0.223434
+fit3 = lmFit(Gene_SMART_B,
+             design,
+             block=pheno_imp_VO2_final$ID,
+             correlation=0.2526745) 
+
+fit4 <- eBayes(fit3)
+
+residuals_training=residuals(fit4,Gene_SMART_B)
+residuals_CRF=residuals(fit4,Gene_SMART_B)
+
+#pca on residuals, colored by CRF and timepoint
+B_sexDMPs=data.frame(residuals_CRF[rownames(residuals_CRF) %in% sexDMPs$MarkerName,])
+PREs=dplyr::select(B_sexDMPs,contains("PRE"))#when doing CRF
+dat_t=t(PREs)
+res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+Sex=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE","sex"]
+CRF=pheno_imp_VO2_final[pheno_imp_VO2_final$Timepoint=="PRE","baselineVO2"]
+PCAplot=fviz_pca_ind(res.pca, geom.ind = "point",pointsize = .05)+
+  # geom_line(aes(group=ID), colour="black", linetype="11")+
+  geom_point(aes(color=CRF))+
+  scale_color_gradient(low = "yellow", high = "blue")
+scale_color_manual(values=c("#FC8D62","#66C2A5"))
+
+tiff("PCA residuals of CRF by CRF not sex.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+PCAplot
+dev.off()
+
+#PCA for gene smart on sex DMPs, colored by PRE POST
+B_sexDMPs=data.frame(residuals_training[rownames(residuals_training) %in% sexDMPs$MarkerName,])
+dat_t=t(B_sexDMPs)
+res.pca <- PCA(dat_t, graph = FALSE) #perform the PCA
+Timepoint=pheno_imp_VO2_final[,"Timepoint"]
+Sex=pheno_imp_VO2_final[,"sex"]
+PCAplot=fviz_pca_ind(res.pca, geom.ind = "point",pointsize = .05)+
+  geom_point(aes(shape=Sex,color=Timepoint))+
+  scale_color_manual(values=c("#ffff67","#BEBADA"))
+
+
+tiff("PCA residuals of timepoint by Timepoint.tiff",
+     height = 4,
+     width = 4.5,
+     units = "in",
+     res = 600)
+PCAplot
+dev.off()
+
+#to see if sex-DMPs are shifting to be more similar to females, ie direction of shift, run linear model of dim1~sex*timepoint
+lm_timepoint=lm(DIM1~sex*Timepoint,data=pheno_imp_VO2_final)
+summary(lm_timepoint)#3.9x10-5 for sex, 0.29 for timepoint, and 0.85 for sex:timepoint
+
+lm_CRF=lm(DIM1~sex*baselineVO2,data=pheno_imp_VO2_final)
+summary(lm_CRF)#.04 for sex, 0.004 for baseline VO2, and 0.49 for baselineVO2:sexmale
+
+
+#save DNAm tables
+write.table(META_M_sextime_inbothstudies_anno,
+            file="META DNAm sextraining.txt",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+write.table(M_anno,
+            file="META DNAm sexCRF.txt",
+            quote = FALSE,
+            row.names = FALSE,
+            col.names = TRUE,
+            sep="\t")
+
+
