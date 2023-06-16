@@ -1,0 +1,207 @@
+####Proteomics####
+#Set working directory
+dir="D:/PhD related/Proteomics project/Data for analyses"
+setwd(dir)
+#load libraries
+library(tidyverse)
+library(limma)
+library(DEP)
+library(SummarizedExperiment)
+library(ComplexHeatmap)
+library(RColorBrewer)
+source("functions.R")
+library(edgeR)
+library(sva)
+library(vsn)
+#Load experiment design
+exp_design<-read.table("exp_design.txt",
+                       header = TRUE,
+                       sep = "\t",
+                       stringsAsFactors = FALSE)
+exp_design=exp_design[c(-76,-164) ,1:5] #Remove bad samples
+exp_design$condition<-factor(exp_design$condition,
+                             levels = c("SI_CON", "SI_PRE", "SI_4WP", "SI_8WP", "SI_12WP",
+                                        "SG_PRE","SG_4WP","FI_PRE", "FI_4WP"))
+#plot sample distribution based on each condition
+dplyr::filter(exp_design, !grepl('Pooled', condition))%>%
+  tidyr::drop_na(.)%>%
+  ggplot(., aes(condition))+
+  geom_bar(fill="#40B8D0")+
+  labs(title="Sample breakout experiment and timepoint", x="Time", y="Count")+
+  geom_text(stat = 'count', aes(label=..count..), vjust=2)+
+  theme_DEP1()
+#Load proteomics data
+Data=read_delim("Macsue_Intensity_Proteins.txt", delim = "\t", col_names = TRUE)
+#Select only the SI
+Data=Data[,c(-92,-180)] #Remove bad samples
+#Vector with new col names
+Sample_Position=exp_design$label
+#Filter for FRD, Contaminant and min unique peptides and rename columns
+Data2=Data%>%
+  filter(Protein FDR Confidence: Combined=="High")%>%
+  filter(Contaminant==FALSE)%>%
+  filter(`# Unique Peptides`>=2)%>%
+  rename_at(vars(grep("Abundance", names(.))), ~Sample_Position)
+#Extract Gene names from description
+Data2 <-Data2 %>% mutate(Gene.names= gsub(".* GN=", "",Description))
+Data2 <-Data2 %>% mutate(Gene.names= gsub(" PE.*", "",Gene.names))
+Data2 <-Data2 %>% mutate(Gene.names= gsub("protein .*", "",Gene.names))
+#Make a data frame with only label, condition and replicate
+exp_design2=exp_design%>%
+  select("label", "condition", "replicate")
+exp_design2<-exp_design2 %>% filter(!is.na(replicate))
+#Make_unique for meake_se
+data_unique=make_unique(Data2, "Gene.names", "Accession", delim = ";" )
+#make data with only intensity cols
+intensity_cols=grep("Set", colnames(Data2))
+#Summarize experiment using make_se #this log transforms the data
+data_se=DEP::make_se(data_unique, intensity_cols, exp_design2)
+data_filtered=filter_missval(data_se, thr=4)
+data_filtered2=assay(data_filtered)
+#QC Plots
+plot_numbers(data_filtered)
+plot_frequency(data_filtered)
+plot_missval(data_filtered)
+#Imputations and VSN normalisation
+data_imp<-DEP:::impute(data_filtered,fun="man",shift=1.8,scale=0.3)
+data_norm<-DEP::normalize_vsn(data_imp)
+#Box plots before and after norm
+plot_normalization(data_imp)
+plot_normalization(data_norm)
+#PCA before and After normalisation
+plot_pca(data_imp, n=2409, indicate = "condition") +
+  labs(title = "Before VSN Normalisation") # n is total number of proteins in the test data.
+plot_pca(data_norm, n=2365, indicate = "condition", label = FALSE)+
+  labs(title = "After VSN Normalisation")
+#Explore the batch effect
+data_imp2=assay(data_imp)
+data_imp2=t(data_imp2)
+data_imp2=data.frame(data_imp2, batch=c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+                                        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+                                        3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
+                                        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+                                        5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+                                        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                                        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                                        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+                                        9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+                                        10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,
+                                        11,11,11,11,11,11,11,11,11,11,11,11,11,11,11))
+data_norm2=assay(data_norm)
+data_norm3=t(data_norm2)
+data_norm3=data.frame(data_norm3, batch=c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+                                          2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+                                          3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
+                                          4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+                                          5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+                                          6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                                          7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                                          8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+                                          9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+                                          10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,
+                                          11,11,11,11,11,11,11,11,11,11,11,11,11,11,11))
+library(FactoMineR)
+library(factoextra)
+PC_imp=PCA(data_imp2)
+PC_norm=PCA(data_norm3)
+batch=c("Set1", "Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1",
+        "Set2", "Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2",
+        "Set3", "Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3",
+        "Set4", "Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4",
+        "Set5","Set5","Set5","Set5","Set5","Set5","Set5", "Set5","Set5","Set5", "Set5","Set5","Set5", "Set5","Set5",
+        "Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6",
+        "Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7",
+        "Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8",
+        "Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9",
+        "Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10",
+        "Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11", "Set11")
+fviz_pca_ind(PC_imp, geom.ind="point", col.ind = batch,
+             palette = c("#333333","#FF9933", "#00AFBB", "#E7B800", "#FC4E07", "#660099", "#FFCCFF", "#660000", "#66FF33", "#996699", "#330066"),
+             addEllipses = TRUE,
+             legend.title = "batch")
+fviz_pca_ind(PC_norm, geom.ind="point", col.ind = batch,
+             palette = c("#333333","#FF9933", "#00AFBB", "#E7B800", "#FC4E07", "#660099", "#FFCCFF", "#660000", "#66FF33", "#996699", "#330066"),
+             addEllipses = TRUE,
+             legend.title = "batch")
+#Correct for batch effects
+#Extract ref channels from data
+data_norm3=2^data_norm2
+irs=tibble("sum1"=data_norm3[,1] , "sum2"=data_norm3[,17], "sum3"=data_norm3[,33], "sum4"=data_norm3[,49],
+           "sum5"=data_norm3[,65], "sum6"=data_norm3[,80], "sum7"=data_norm3[,96], "sum8"=data_norm3[,112],
+           "sum9"=data_norm3[,128], "sum10"=data_norm3[,144], "sum11"=data_norm3[,160])
+# get the geometric average intensity for each protein
+irs$average <- apply(irs, 1, function(x) exp(mean(log(x))))
+# compute the scaling factor vectors
+irs$fac1 <- irs$average / irs$sum1
+irs$fac2 <- irs$average / irs$sum2
+irs$fac3 <- irs$average / irs$sum3
+irs$fac4 <- irs$average / irs$sum4
+irs$fac5 <- irs$average / irs$sum5
+irs$fac6 <- irs$average / irs$sum6
+irs$fac7 <- irs$average / irs$sum7
+irs$fac8 <- irs$average / irs$sum8
+irs$fac9 <- irs$average / irs$sum9
+irs$fac10 <- irs$average / irs$sum10
+irs$fac11 <- irs$average / irs$sum11
+# make new data frame with IRS normalized data
+data_norm_set1=data_norm3[,2:16]
+data_norm_set2=data_norm3[,18:32]
+data_norm_set3=data_norm3[,34:48]
+data_norm_set4=data_norm3[,50:64]
+data_norm_set5=data_norm3[,66:79]
+data_norm_set6=data_norm3[,81:95]
+data_norm_set7=data_norm3[,97:111]
+data_norm_set8=data_norm3[,113:127]
+data_norm_set9=data_norm3[,129:143]
+data_norm_set10=data_norm3[,145:159]
+data_norm_set11=data_norm3[,161:174]
+data_irs <- data_norm_set1 * irs$fac1
+data_irs <- cbind(data_irs, data_norm_set2 * irs$fac2)
+data_irs <- cbind(data_irs, data_norm_set3 * irs$fac3)
+data_irs <- cbind(data_irs, data_norm_set4 * irs$fac4)
+data_irs <- cbind(data_irs, data_norm_set5 * irs$fac5)
+data_irs <- cbind(data_irs, data_norm_set6 * irs$fac6)
+data_irs <- cbind(data_irs, data_norm_set7 * irs$fac7)
+data_irs <- cbind(data_irs, data_norm_set8 * irs$fac8)
+data_irs <- cbind(data_irs, data_norm_set9 * irs$fac9)
+data_irs <- cbind(data_irs, data_norm_set10 * irs$fac10)
+data_irs <- cbind(data_irs, data_norm_set11 * irs$fac11)
+data_irs_log=log2(data_irs)
+#Check to see if norm worked
+data_irs2=t(data_irs_log)
+data_irs2=data.frame(data_irs2, batch=c(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+                                        2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+                                        3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,
+                                        4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+                                        5,5,5,5,5,5,5,5,5,5,5,5,5,5,
+                                        6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
+                                        7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
+                                        8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,
+                                        9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,
+                                        10,10,10,10,10,10,10,10,10,10,10,10,10,10,10,
+                                        11,11,11,11,11,11,11,11,11,11,11,11,11,11))
+library(FactoMineR)
+library(factoextra)
+PC_irs=PCA(data_irs2)
+batch=c("Set1", "Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1","Set1",
+        "Set2", "Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2","Set2",
+        "Set3", "Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3","Set3",
+        "Set4", "Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4","Set4",
+        "Set5","Set5","Set5","Set5","Set5","Set5","Set5", "Set5","Set5","Set5", "Set5","Set5","Set5", "Set5",
+        "Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6","Set6",
+        "Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7","Set7",
+        "Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8","Set8",
+        "Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9","Set9",
+        "Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10","Set10",
+        "Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11","Set11")
+exp3=exp_design2[c(-1,-17,-33,-49,-65,-80,-96,-112,-128,-144,-160),]
+condition=exp3$condition
+fviz_pca_ind(PC_irs, geom.ind="point", col.ind = batch,
+             palette = c("#333333","#FF9933","#00AFBB", "#E7B800", "#FC4E07", "#660099", "#FFCCFF", "#660000", "#66FF33", "#996699", "#330066"),
+             addEllipses = TRUE,
+             legend.title = "batch")
+fviz_pca_ind(PC_irs, geom.ind="point", col.ind = condition,
+             palette = c("#333333","#FF9933","#00AFBB", "#E7B800", "#FC4E07", "#660099", "#FFCCFF", "#660000", "#66FF33", "#996699", "#330066"),
+             addEllipses = TRUE,
+             legend.title = "condition")
+boxplot(data_irs_log, fill="condition", notch=TRUE)
